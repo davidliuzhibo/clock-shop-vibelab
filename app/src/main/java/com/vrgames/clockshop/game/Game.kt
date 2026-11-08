@@ -133,6 +133,9 @@ object Game {
                     tool = null
                 }
                 is Shop.Event.RoomDone -> Unit
+                Shop.Event.MantelTurned -> sound?.play(Sfx.OPEN)
+                Shop.Event.TowerRuns -> sound?.play(Sfx.CHIME)
+                is Shop.Event.PlateFound -> sound?.play(Sfx.PART)
             }
         }
         if (s.room != roomBefore) {

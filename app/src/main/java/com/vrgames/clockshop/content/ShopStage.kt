@@ -221,7 +221,7 @@ fun ShopStage() {
         update = { _, attachments -> view?.let { attach(it, attachments, panels) } },
         initial = { content, attachments ->
             val sun = Entity().apply {
-                components.set(DirectionalLightComponent(Color(0xFFFFF0D8).toColor4(), 900f, true))
+                components.set(DirectionalLightComponent(Color(0xFFFFF0D8).toColor4(), 900f, false))
                 components[TransformComponent::class.java]?.setEulerAngles(EulerAngles(-45f, -35f, 0f))
             }
             content.addEntity(sun)
@@ -295,7 +295,12 @@ private fun onThing(id: String, toggle: (String) -> Unit) {
         }
         kind == "clock" -> Game.tool = id
         kind == "dial" -> {
-            Game.tool = if (name.startsWith("safe")) "safe" else "rings"
+            Game.tool = when {
+                name.startsWith("safe") -> "safe"
+                name == "pend" -> "pendulum"
+                name in setOf("month", "day", "week") -> "calendar"
+                else -> "rings"
+            }
             Game.turnDial(name)
         }
         id == "letter" -> {
@@ -309,6 +314,17 @@ private fun onThing(id: String, toggle: (String) -> Unit) {
         }
         id == "drawer" -> Game.act(if (Shop.Item.KEY_DRAWER in s.tray) "use KEY_DRAWER drawer" else "open drawer")
         id == "go:workshop" -> Game.act("go workshop")
+        id == "go:tower" -> Game.act("go tower")
+        id == "study" -> if (Shop.Item.KEY_STUDY in s.tray) Game.act("use KEY_STUDY study") else refuse("书房的门锁着。")
+        id.startsWith("train") -> {
+            val slot = id.removePrefix("train").toIntOrNull() ?: return
+            when {
+                sel in Shop.RATIOS -> Game.act("use ${sel!!.name} $id")
+                s.train.containsKey(slot) -> Game.act("untrain $slot")
+                s.tray.any { it in Shop.RATIOS } -> Game.say("先捏一下托盘里的传动轮选中它，再捏这根轴。")
+                else -> Game.say("这根传动轴空着。架子上有四只传动轮，先拿起来。")
+            }
+        }
         id == "attic" -> if (Shop.Item.KEY_ATTIC in s.tray) Game.act("use KEY_ATTIC attic") else refuse("阁楼的门锁着。")
         id == "cellar" -> if (Shop.Item.KEY_CELLAR in s.tray) Game.act("use KEY_CELLAR cellar") else refuse("地板上的活门锁着。")
         id.startsWith("gear") -> when {
@@ -327,7 +343,7 @@ private fun onThing(id: String, toggle: (String) -> Unit) {
             }
         }
         // Things that open never need what is in hand.
-        id in setOf("mantel", "toolbox", "chest") -> Game.act("open $id")
+        id in setOf("mantel", "toolbox", "chest", "lever", "lamp", "news", "cabinet") -> Game.act("open $id")
         sel != null -> Game.act("use ${sel.name} $id")
         else -> Game.act("open $id")
     }
@@ -339,10 +355,13 @@ private fun refuse(why: String) {
 }
 
 /** Textures loaded if present (see docs/素材来源.md). */
-private val TEXTURES = listOf("wallpaper", "planks", "stone", "photo1", "photo2", "photo3", "photo4", "photo5", "sketch", "letter", "glasswords")
+private val TEXTURES = listOf("photo1", "photo2", "photo3", "photo4", "photo5", "sketch", "letter", "glasswords", "plate_san", "plate_sun", "plate_moon", "plate_star", "mark_sun", "mark_moon", "mark_star", "dial_three", "floor_hours", "plate_r2", "plate_r3", "plate_r4", "plate_r5", "plate_rule", "news")
 
 /** Props loaded if present (Seed3D + prep_ai), else simple stand-ins. */
-private val MODELS = listOf("grandfather", "wallclock", "mantel", "musicbox", "gramophone", "pocketwatch", "astro", "desklamp", "safe")
+private val MODELS = listOf("grandfather", "wallclock", "mantel", "musicbox", "gramophone", "pocketwatch", "astro", "desklamp", "safe",
+    "shell_front", "shell_workshop", "shell_attic", "shell_cellar", "shell_tower", "shell_study",
+    "tower_movement", "calendar_clock", "writing_desk", "cabinet", "wheel_big", "wheel_small", "plate_disc", "panel_card", "panel_tool", "panel_result", "panel_note", "panel_hud")
+private val PANEL_FRAMES = mapOf(PANEL_CARD to "panel_card", PANEL_TOOL to "panel_tool", PANEL_RESULT to "panel_result", PANEL_NOTE to "panel_note", PANEL_HUD to "panel_hud")
 
 /** The menu tab low at the left of the tray, and where the unfolded menu stands (tray frame). */
 private val MENU_POS = Vector3(-0.36f, 0.82f, -0.5f)
@@ -355,6 +374,7 @@ private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<Strin
         panels[id] = e
         v.trayRoot.addChild(e)
         e.setPos(pos)
+        PANEL_FRAMES[id]?.let { name -> v.frame(name)?.let { f -> f.setPos(Vector3(0f, 0f, -0.006f)); e.addChild(f) } }
         e.transform().eulerAngles = EulerAngles(pitch, yaw, 0f)
     }
     // All in the tray's frame, so they stay in front as the player turns. Card and result ahead at
@@ -362,7 +382,7 @@ private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<Strin
     // below the line of sight to the room; notes above them.
     put(PANEL_CARD, Vector3(0f, 1.2f, -0.85f), 0f)
     put(PANEL_RESULT, Vector3(0f, 1.2f, -0.85f), 0f)
-    put(PANEL_HUD, Vector3(0.36f, 0.86f, -0.5f), -25f, -30f)
+    put(PANEL_HUD, Vector3(0.42f, 0.9f, -0.5f), -22f, -32f)
     put(PANEL_TOOL, Vector3(0f, 1.0f, -0.55f), -18f)
     put(PANEL_NOTE, Vector3(0f, 1.12f, -0.7f), -8f)
     put(PANEL_MENU, MENU_POS, -30f, 30f)

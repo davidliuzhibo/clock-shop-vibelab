@@ -71,6 +71,23 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         dark = pbr(color(0.1f, 0.1f, 0.1f))
     }
 
+    /** A loaded panel frame, given the shop's light. */
+    fun frame(name: String): Entity? = models[name]?.clone(Entity.CloneOptions(true, true))?.also { lighting.receive(it) }
+
+    /** The baked room shell: one mesh, one unlit atlas, tinted for the hour instead of relit. */
+    private var shellTexture = HashMap<String, TextureResource>()
+    private fun shell(name: String, tint: Color4): Entity? {
+        val mesh = models["shell_$name"]?.clone(Entity.CloneOptions(true, true)) ?: return null
+        val t = shellTexture.getOrPut(name) { TextureResource.load("textures/shell_$name.jpg", com.pico.spatial.core.ecs.LoadType.FROM_ASSETS, com.pico.spatial.core.ecs.resource.TextureCreateOption()).shared() }
+        setAllMaterials(mesh, UnlitMaterial.create().apply { setBaseColorTexture(t); setBaseColor(tint) })
+        return mesh
+    }
+
+    private fun setAllMaterials(e: Entity, m: Material) {
+        e.components[com.pico.spatial.core.ecs.ModelComponent::class.java]?.materials?.let { mats -> for (i in 0 until mats.size) mats[i] = m }
+        e.getChildren().forEach { setAllMaterials(it, m) }
+    }
+
     private fun textured(name: String, tint: Color4 = color(1f, 1f, 1f), glowShare: Float = 0.3f): Material? = tex[name]?.let { t ->
         PhysicallyBasedMaterial.create().apply {
             setBaseColorTexture(t)
@@ -156,6 +173,21 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         }
     }
 
+    /** A transmission wheel with its ratio cast on a plate: bigger ratio, bigger wheel. */
+    private fun ratioWheel(i: Item, m: Material) = Entity().apply {
+        val n = Shop.RATIO[i] ?: 2
+        val r = 0.04f + n * 0.008f
+        addChild((models["wheel_small"]?.clone(Entity.CloneOptions(true, true)) ?: gearMesh(r, m)).apply { setScale(if (models["wheel_small"] != null) r * 2 else 1f) })
+        addChild(plate("plate_r$n", 0.05f).apply { setPos(Vector3(0f, 0f, 0.016f)) })
+    }
+
+    /** A round brass plate facing +z, from a texture drawn with its symbol (tools/make_plates.py). */
+    private fun plate(name: String, radius: Float): Entity =
+        (models["plate_disc"]?.clone(Entity.CloneOptions(true, true)) ?: model(MeshResource.createSphere(1f), brass)).apply {
+            setScale(radius)
+            textured(name, glowShare = 0.5f)?.let { setAllMaterials(this, it) }
+        }
+
     private fun keyMesh(m: Material) = Entity().apply {
         addChild(model(MeshResource.createTorus(0.025f, 0.017f), m).apply { setPos(Vector3(-0.04f, 0f, 0f)); transform().eulerAngles = EulerAngles(90f, 0f, 0f) })
         addChild(model(MeshResource.createBox(Vector3(0.07f, 0.008f, 0.008f), 0f), m).apply { setPos(Vector3(0.015f, 0f, 0f)) })
@@ -171,7 +203,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
     /** A thing to take, as it looks lying in the room or in the hand tray. */
     private fun itemLook(i: Item, m: Material = brass): Entity = when (i) {
         Item.GEAR_L, Item.GEAR_M, Item.GEAR_S -> gearMesh(GEAR_R[i]!!, m)
-        Item.KEY_DRAWER, Item.KEY_ATTIC, Item.KEY_CELLAR -> keyMesh(m)
+        Item.KEY_DRAWER, Item.KEY_ATTIC, Item.KEY_CELLAR, Item.KEY_STUDY -> keyMesh(m)
+        Item.RATIO_2, Item.RATIO_3, Item.RATIO_4, Item.RATIO_5 -> ratioWheel(i, m)
         else -> photoMesh(i)
     }
 
@@ -191,44 +224,18 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         hands.clear()
         roomRoot = Entity()
         root.addChild(roomRoot)
-        val tint = when (r) {
-            Room.FRONT -> color(0.8f, 0.9f, 0.78f)
-            Room.WORKSHOP -> color(0.5f, 0.36f, 0.26f)
-            Room.ATTIC -> if (m == Mood.THAT_DAY) color(1f, 0.85f, 0.65f) else color(0.8f, 0.72f, 0.65f)
-            Room.CELLAR -> color(0.55f, 0.55f, 0.62f)
+        val tint = when (m) {
+            Mood.SUNLIT -> color(1f, 0.95f, 0.8f)
+            Mood.NIGHT -> color(0.34f, 0.32f, 0.42f)
+            Mood.THAT_DAY -> color(1f, 0.86f, 0.66f)
+            Mood.DARK -> color(0.22f, 0.2f, 0.22f)
+            Mood.CELLAR, Mood.DAY -> color(0.9f, 0.9f, 0.9f)
         }
-        // Floor, ceiling and four walls, about six meters across.
-        val h = if (r == Room.ATTIC) 2.7f else 3.2f
-        box(Vector3(6.2f, 0.05f, 6.2f), Vector3(0f, -0.025f, 0f), floorMat)
-        box(Vector3(6.2f, 0.05f, 6.2f), Vector3(0f, h, 0f), woodDark)
-        // Wallpaper in the shop, dark panelling in the workshop, bare boards in the attic, stone in the cellar; boards and
-        // stone are laid as tiles so the texture keeps its size instead of stretching over the wall.
-        val (wallTex, cols, rows) = when (r) {
-            Room.WORKSHOP -> Triple("planks", 4, 1)
-            Room.ATTIC -> Triple("planks", 3, 1)
-            Room.CELLAR -> Triple("stone", 4, 2)
-            else -> Triple("wallpaper", 1, 1)
-        }
-        val w = textured(wallTex, tint, 0.2f) ?: pbr(tint, roughness = 0.9f)
-        val tw = 6.2f / cols
-        val th = h / rows
-        for (c in 0 until cols) for (k in 0 until rows) {
-            val u = -3.1f + tw * (c + 0.5f)
-            val y = th * (k + 0.5f)
-            box(Vector3(tw, th, 0.05f), Vector3(u, y, -3f), w)
-            box(Vector3(tw, th, 0.05f), Vector3(u, y, 3f), w)
-            // Side walls are front-facing tiles turned a quarter, so boards stay upright and bricks level.
-            box(Vector3(tw, th, 0.05f), Vector3(-3f, y, u), w).transform().eulerAngles = EulerAngles(0f, 90f, 0f)
-            box(Vector3(tw, th, 0.05f), Vector3(3f, y, u), w).transform().eulerAngles = EulerAngles(0f, -90f, 0f)
-        }
-        // A skirting board and a picture rail, so the walls read as walls.
-        for ((size, at) in listOf(
-            Vector3(6.1f, 0.14f, 0.03f) to Vector3(0f, 0.07f, -2.96f), Vector3(0.03f, 0.14f, 6.1f) to Vector3(-2.96f, 0.07f, 0f), Vector3(0.03f, 0.14f, 6.1f) to Vector3(2.96f, 0.07f, 0f),
-            Vector3(6.1f, 0.04f, 0.03f) to Vector3(0f, h - 0.3f, -2.96f), Vector3(0.03f, 0.04f, 6.1f) to Vector3(-2.96f, h - 0.3f, 0f), Vector3(0.03f, 0.04f, 6.1f) to Vector3(2.96f, h - 0.3f, 0f),
-        )) box(size, at, woodDark)
+        // The shell: floor, ceiling and walls, baked with their own light (tools/build_shells.py).
+        shell(r.name.lowercase(), tint)?.let { roomRoot.addChild(it) }
         // Clocks everywhere in the shop downstairs: its tick, hung high on the walls around (not to touch).
         for ((at, yaw) in DECOR_CLOCKS) {
-            if (r == Room.ATTIC || r == Room.CELLAR) break
+            if (r != Room.FRONT && r != Room.WORKSHOP) break
             (piece("wallclock", 0.42f) ?: Entity().also { c ->
                 c.addChild(model(MeshResource.createBox(Vector3(0.3f, 0.42f, 0.08f), 0.01f), woodMid).apply { setPos(Vector3(0f, 0.21f, 0f)) })
                 c.addChild(model(MeshResource.createCylinder(0.02f, 0.11f), paper).apply { setPos(Vector3(0f, 0.28f, 0.045f)); transform().eulerAngles = EulerAngles(90f, 0f, 0f) })
@@ -236,6 +243,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
                 setPos(at)
                 transform().eulerAngles = EulerAngles(0f, yaw, 0f)
                 roomRoot.addChild(this)
+                // Every clock on these walls stopped at the same hour: a pattern to notice.
+                if (r == Room.FRONT) addChild(plate("dial_three", 0.082f / 0.42f).apply { setPos(Vector3(0f, 0.68f, 0.135f)) })
             }
         }
         when (r) {
@@ -243,6 +252,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             Room.WORKSHOP -> buildWorkshop()
             Room.ATTIC -> buildAttic()
             Room.CELLAR -> buildCellar()
+            Room.TOWER -> buildTower()
+            Room.STUDY -> buildStudy()
         }
         lighting.use(m)
         lighting.receive(root)
@@ -255,10 +266,17 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         // The counter to the right front, the mantel clock on it, the drawer facing the player.
         box(Vector3(1.6f, 1.0f, 0.5f), Vector3(0.75f, 0.5f, -1.45f), woodMid)
         box(Vector3(1.66f, 0.04f, 0.56f), Vector3(0.75f, 1.02f, -1.45f), woodDark)
-        val mantel = Entity().apply { setPos(Vector3(1.15f, 1.04f, -1.5f)) }
+        // Worn into the counter by years of turning: a faint ring under the mantel clock, which stands a little askew.
+        roomRoot.addChild(model(MeshResource.createTorus(0.215f, 0.205f), pbr(color(0.13f, 0.08f, 0.04f), roughness = 0.9f)).apply {
+            setPos(Vector3(1.15f, 1.042f, -1.5f))
+        })
+        val mantel = Entity().apply { setPos(Vector3(1.15f, 1.04f, -1.5f)); transform().eulerAngles = EulerAngles(0f, MANTEL_ASKEW, 0f) }
+        mantelYaw = MANTEL_ASKEW
         mantel.addChild(piece("mantel", 0.42f) ?: box(Vector3(0.35f, 0.42f, 0.2f), Vector3(0f, 0.21f, 0f), woodDark, mantel))
-        // The little door in its side that the sun unlocks.
-        val back = box(Vector3(0.02f, 0.2f, 0.16f), Vector3(-0.19f, 0.15f, 0f), woodDark, mantel)
+        // On its back, away from the player until it is turned: the little door and the carved 三.
+        mantel.addChild(plate("dial_three", 0.075f).apply { setPos(Vector3(0f, 0.29f, 0.115f)) })
+        val back = box(Vector3(0.2f, 0.22f, 0.012f), Vector3(0f, 0.2f, -0.11f), woodDark, mantel)
+        back.addChild(plate("plate_san", 0.085f).apply { setPos(Vector3(0f, 0f, -0.008f)); transform().eulerAngles = EulerAngles(0f, 180f, 0f) })
         parts["mantelDoor"] = back
         roomRoot.addChild(mantel)
         hit(mantel, "mantel", Vector3(0.42f, 0.48f, 0.32f), Vector3(0f, 0.22f, 0f))
@@ -283,6 +301,12 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         val beam = box(Vector3(0.7f, 3.4f, 0.5f), Vector3(-0.6f, 1.6f, -1.5f), sunMat)
         beam.transform().eulerAngles = EulerAngles(0f, 0f, 38f)
         parts["sun"] = beam
+        // A strip of brass-set numerals in the floor: where the sun's patch falls, hour by hour.
+        val inlay = box(Vector3(0.14f, 0.004f, 1.15f), Vector3(-2.05f, 0.004f, -0.98f), textured("floor_hours", glowShare = 0.4f) ?: woodMid)
+        inlay.transform().eulerAngles = EulerAngles(0f, -60f, 0f)
+        val patch = model(MeshResource.createBox(Vector3(0.3f, 0.002f, 0.2f), 0f), sunMat).apply { setPos(Vector3(-2.6f, 0.008f, -0.7f)) }
+        roomRoot.addChild(patch)
+        parts["sunPatch"] = patch
         door("go:workshop", Vector3(2.95f, 1.05f, -1.2f), -90f)
     }
 
@@ -292,6 +316,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         // The music box in the middle of the bench, with three gear seats above it (big at the bottom).
         val mb = Entity().apply { setPos(Vector3(0f, 0.94f, -1.25f)) }
         mb.addChild(piece("musicbox", 0.22f) ?: box(Vector3(0.3f, 0.15f, 0.2f), Vector3(0f, 0.075f, 0f), woodDark, mb))
+        // The same moon is cut in the music box's front and beside the wall clock's face.
+        mb.addChild(plate("mark_moon", 0.03f).apply { setPos(Vector3(0f, 0.08f, 0.115f)) })
         roomRoot.addChild(mb)
         parts["musicbox"] = mb
         for (k in 1..3) {
@@ -329,6 +355,7 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         // (Its face sits high enough that the line from the chair passes over the gear seats.)
         (piece("wallclock", 0.75f) ?: box(Vector3(0.5f, 0.75f, 0.1f), Vector3(0f, 0.37f, 0f), woodDark)).apply { setPos(Vector3(0f, 1.55f, -2.9f)); roomRoot.addChild(this) }
         clockFace("wall", Vector3(0f, 2.05f, -2.78f), 0.17f)
+        roomRoot.addChild(plate("plate_moon", 0.085f).apply { setPos(Vector3(0.34f, 2.05f, -2.8f)) })
         // The safe on the floor to the right, three dials on its door, turned to the chair; it stands
         // clear of the bench, whose corner would otherwise hide the dials.
         val safe = Entity().apply { setPos(Vector3(1.6f, 0f, -1.1f)); transform().eulerAngles = EulerAngles(0f, -50f, 0f) }
@@ -373,6 +400,7 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             transform().eulerAngles = EulerAngles(0f, 0f, 90f)
         })
         clockFace("attic", Vector3(-2.6f, 1.9f, -1.0f), 0.2f, yaw = 90f)
+        roomRoot.addChild(plate("mark_star", 0.07f).apply { setPos(Vector3(-2.64f, 1.54f, -1.0f)); transform().eulerAngles = EulerAngles(0f, 90f, 0f) })
         // The chest that is only there on that afternoon.
         val chest = box(Vector3(0.6f, 0.4f, 0.4f), Vector3(-1.2f, 0.2f, -1.5f), pbr(color(0.45f, 0.28f, 0.16f)))
         chest.addChild(model(MeshResource.createBox(Vector3(0.62f, 0.06f, 0.42f), 0.01f), pbr(color(0.35f, 0.2f, 0.1f))).apply { setName("lid"); setPos(Vector3(0f, 0.22f, 0f)) })
@@ -388,6 +416,13 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
     private fun buildCellar() {
         // The astronomical clock: three rings to set (sun, moon, stars) and the clockwork bird on top.
         (piece("astro", 2.5f) ?: box(Vector3(1.2f, 1.7f, 0.4f), Vector3(0f, 0.85f, 0f), woodDark)).apply { setPos(Vector3(0f, 0f, -2.55f)); roomRoot.addChild(this) }
+        // The three plates earned upstairs, on the wall left of the clock: what to set each ring to.
+        for ((k, p) in Shop.Plate.values().withIndex()) {
+            val e = plate("plate_${p.name.lowercase()}", 0.17f).apply { setPos(Vector3(-1.45f, 1.85f - k * 0.42f, -2.2f)); }
+            roomRoot.addChild(e)
+            hit(e, "plate:${p.name}", Vector3(0.36f, 0.36f, 0.1f))
+        }
+        door("go:tower", Vector3(1.55f, 1.05f, -2.4f), 0f)
         val backing = model(MeshResource.createCylinder(0.02f, 0.66f), pbr(color(0.12f, 0.14f, 0.3f))).apply {
             setPos(Vector3(0f, 1.25f, -1.8f)); transform().eulerAngles = EulerAngles(90f, 0f, 0f)
         }
@@ -400,7 +435,7 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
                 transform().eulerAngles = EulerAngles(90f, 0f, 0f)
             })
             // The marker on each ring (a sun, a moon, a star): it points at the hour the ring is set to.
-            ring.addChild(model(sphere, glow(ringColors[k - 1])).apply { setScale(0.035f); setPos(Vector3(0f, r - 0.022f, 0.03f)) })
+            ring.addChild(plate(listOf("mark_sun", "mark_moon", "mark_star")[k - 1], 0.045f).apply { setPos(Vector3(0f, r - 0.022f, 0.03f)) })
             roomRoot.addChild(ring)
             hit(ring, "dial:ring$k", Vector3(r * 2, r * 2, 0.05f))
             parts["ringVis$k"] = ring
@@ -420,6 +455,104 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         bird.addChild(model(MeshResource.createBox(Vector3(0.1f, 0.01f, 0.05f), 0f), brass).apply { setPos(Vector3(-0.08f, 0.02f, 0f)); transform().eulerAngles = EulerAngles(0f, 0f, 25f) })
         roomRoot.addChild(bird)
         parts["bird"] = bird
+    }
+
+    private fun buildTower() {
+        // Ahead: the great movement on its beams, the tower clock's face above it, the pendulum in the middle.
+        (piece("tower_movement", 1.25f) ?: box(Vector3(1.6f, 1.2f, 0.7f), Vector3(0f, 0.6f, 0f), dark)).apply { setPos(Vector3(0f, 0f, -2.15f)); roomRoot.addChild(this) }
+        clockFace("tower", Vector3(0f, 2.05f, -2.72f), 0.46f)
+        // Wheels that turn once the lever is thrown.
+        for ((k, spec) in listOf(Triple(-0.72f, 0.26f, "towerWheelA"), Triple(0.72f, 0.2f, "towerWheelB")).withIndex()) {
+            val w = Entity().apply { setPos(Vector3(spec.first, 1.0f + k * 0.08f, -1.72f)) }
+            w.addChild((piece("wheel_big", spec.second * 2) ?: gearMesh(spec.second, brass)))
+            roomRoot.addChild(w)
+            parts[spec.third] = w
+        }
+        // The pendulum hangs from a beam; its length follows the dial.
+        val pivot = Entity().apply { setPos(Vector3(0f, 2.95f, -1.55f)) }
+        val rod = model(MeshResource.createCylinder(1f, 0.008f), brass).apply { setPos(Vector3(0f, -0.5f, 0f)) }
+        val bob = model(MeshResource.createCylinder(0.03f, 0.09f), brass).apply { transform().eulerAngles = EulerAngles(90f, 0f, 0f) }
+        pivot.addChild(rod)
+        pivot.addChild(bob)
+        roomRoot.addChild(pivot)
+        parts["pendulum"] = pivot
+        parts["pendRod"] = rod
+        parts["pendBob"] = bob
+        // The dial that sets its length, the seconds clock to compare it with, and the rule cast in brass.
+        val dial = Entity().apply { setPos(Vector3(-0.55f, 1.05f, -1.15f)) }
+        dial.addChild(model(MeshResource.createCylinder(0.03f, 0.08f), brass).apply { transform().eulerAngles = EulerAngles(90f, 0f, 0f) })
+        dial.addChild(model(MeshResource.createBox(Vector3(0.016f, 0.065f, 0.012f), 0f), dark).apply { setPos(Vector3(0f, 0.034f, 0.02f)) })
+        roomRoot.addChild(dial)
+        hit(dial, "dial:pend", Vector3(0.2f, 0.2f, 0.1f))
+        val seconds = Entity().apply { setPos(Vector3(-1.45f, 1.55f, -2.2f)) }
+        seconds.addChild(plate("plate_rule", 0.34f))
+        roomRoot.addChild(seconds)
+        val hand = Entity().apply { setPos(Vector3(1.4f, 1.6f, -2.2f)) }
+        val secFace = Entity().apply { setPos(Vector3(1.4f, 1.6f, -2.21f)) }
+        secFace.addChild(model(MeshResource.createCylinder(0.015f, 0.2f), paper).apply { transform().eulerAngles = EulerAngles(90f, 0f, 0f) })
+        secFace.addChild(model(MeshResource.createTorus(0.215f, 0.2f), brass).apply { transform().eulerAngles = EulerAngles(90f, 0f, 0f) })
+        roomRoot.addChild(secFace)
+        hand.addChild(model(MeshResource.createBox(Vector3(0.012f, 0.18f, 0.006f), 0f), dark).apply { setPos(Vector3(0f, 0.08f, 0.02f)) })
+        roomRoot.addChild(hand)
+        parts["secondHand"] = hand
+        // The gear train: two shafts on the bench, the four wheels on the shelf beside them.
+        box(Vector3(1.6f, 0.06f, 0.5f), Vector3(0f, 0.86f, -1.1f), woodDark)
+        for (k in 1..2) {
+            val shaft = Entity().apply { setPos(Vector3(-0.1f + (k - 1) * 0.36f, 1.08f, -1.15f)) }
+            shaft.addChild(model(MeshResource.createCylinder(0.34f, 0.012f), dark).apply { setPos(Vector3(0f, -0.06f, -0.02f)) })
+            shaft.addChild(model(MeshResource.createTorus(0.11f, 0.1f), slotMat).apply { setName("glow"); transform().eulerAngles = EulerAngles(90f, 0f, 0f) })
+            roomRoot.addChild(shaft)
+            hit(shaft, "train$k", Vector3(0.26f, 0.26f, 0.12f))
+        }
+        Shop.RATIOS.forEachIndexed { k, i -> item(i, Vector3(0.45f + (k % 2) * 0.2f, 0.98f + (k / 2) * 0.17f, -1.05f)) }
+        // The red clutch lever at the bench's left.
+        val lever = Entity().apply { setPos(Vector3(-0.3f, 0.9f, -0.95f)) }
+        lever.addChild(model(MeshResource.createCylinder(0.26f, 0.014f), pbr(color(0.7f, 0.12f, 0.08f))).apply { setPos(Vector3(0f, 0.13f, 0f)) })
+        lever.addChild(model(sphere, pbr(color(0.85f, 0.15f, 0.1f), roughness = 0.3f)).apply { setScale(0.032f); setPos(Vector3(0f, 0.27f, 0f)) })
+        roomRoot.addChild(lever)
+        hit(lever, "lever", Vector3(0.14f, 0.34f, 0.14f), Vector3(0f, 0.14f, 0f))
+        parts["leverArm"] = lever
+        item(Item.KEY_STUDY, Vector3(0.3f, 0.92f, -0.98f))
+        door("study", Vector3(-2.95f, 1.05f, -0.8f), 90f)
+    }
+
+    private fun buildStudy() {
+        (piece("writing_desk", 0.8f) ?: box(Vector3(1.3f, 0.76f, 0.7f), Vector3(0f, 0.38f, 0f), woodMid)).apply { setPos(Vector3(0f, 0f, -1.35f)); roomRoot.addChild(this) }
+        // The lamp: dark room until it is pinched.
+        val lamp = Entity().apply { setPos(Vector3(0.45f, 0.8f, -1.5f)) }
+        lamp.addChild(piece("desklamp", 0.45f) ?: box(Vector3(0.12f, 0.45f, 0.12f), Vector3(0f, 0.22f, 0f), brass, lamp))
+        lamp.addChild(model(sphere, lampLight).apply { setName("bulb"); setScale(0.04f); setPos(Vector3(-0.03f, 0.36f, 0.03f)) })
+        roomRoot.addChild(lamp)
+        hit(lamp, "lamp", Vector3(0.22f, 0.5f, 0.22f), Vector3(0f, 0.22f, 0f))
+        parts["studyLamp"] = lamp
+        // The newspaper under it.
+        val news = box(Vector3(0.42f, 0.004f, 0.3f), Vector3(0.05f, 0.81f, -1.25f), textured("news", glowShare = 0.4f) ?: paper)
+        news.transform().eulerAngles = EulerAngles(0f, 6f, 0f)
+        hit(news, "news", Vector3(0.44f, 0.06f, 0.32f))
+        // The perpetual calendar against the left wall, three dials to set.
+        val cal = Entity().apply { setPos(Vector3(-1.5f, 0f, -2.0f)); transform().eulerAngles = EulerAngles(0f, 25f, 0f) }
+        cal.addChild(piece("calendar_clock", 2.2f) ?: box(Vector3(0.7f, 2.2f, 0.35f), Vector3(0f, 1.1f, 0f), woodDark, cal))
+        for ((k, d) in listOf("month", "day", "week").withIndex()) {
+            // On the model's own three brass dials.
+            val e = Entity().apply { setPos(Vector3(0f, 1.37f - k * 0.21f, 0.17f)) }
+            e.addChild(model(MeshResource.createBox(Vector3(0.016f, 0.07f, 0.01f), 0f), dark).apply { setPos(Vector3(0f, 0.04f, 0.012f)) })
+            cal.addChild(e)
+            hit(e, "dial:$d", Vector3(0.2f, 0.2f, 0.08f))
+            parts["calDial$k"] = e
+        }
+        roomRoot.addChild(cal)
+        // The cabinet on the right, its door tied to the calendar; the finished watch comes out of it.
+        val cabinet = Entity().apply { setPos(Vector3(1.55f, 0f, -2.0f)); transform().eulerAngles = EulerAngles(0f, -25f, 0f) }
+        cabinet.addChild(piece("cabinet", 2f) ?: box(Vector3(0.9f, 2f, 0.45f), Vector3(0f, 1f, 0f), woodDark, cabinet))
+        roomRoot.addChild(cabinet)
+        hit(cabinet, "cabinet", Vector3(0.9f, 2f, 0.5f), Vector3(0f, 1f, 0f))
+        // A brass rod runs from the calendar along the wall into the cabinet's side: one moves the other.
+        box(Vector3(2.5f, 0.016f, 0.016f), Vector3(0.02f, 0.42f, -2.36f), brass)
+        // The reward: the finished watch, big and turning in the air above the desk.
+        val watch = Entity().apply { setPos(Vector3(0f, 1.42f, -1.3f)); enabled = false }
+        watch.addChild(piece("pocketwatch", 0.42f) ?: model(sphere, brass).apply { setScale(0.2f) })
+        roomRoot.addChild(watch)
+        parts["bigWatch"] = watch
     }
 
     private fun door(id: String, at: Vector3, yaw: Float) {
@@ -498,7 +631,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         Room.FRONT -> if (s.sunlit) Mood.SUNLIT else Mood.DAY
         Room.WORKSHOP -> if (s.night) Mood.NIGHT else Mood.DAY
         Room.ATTIC -> if (s.thatDay) Mood.THAT_DAY else Mood.DAY
-        Room.CELLAR -> Mood.CELLAR
+        Room.CELLAR, Room.TOWER -> Mood.CELLAR
+        Room.STUDY -> if (s.lampOn) Mood.DAY else Mood.DARK
     }
 
     fun sync(s: Shop, selected: Item?) {
@@ -514,10 +648,13 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             Room.FRONT -> {
                 parts["sun"]?.enabled = s.sunlit
                 parts["words"]?.enabled = s.sunlit
+                s.clocks["big"]?.let { (h, m) -> placeSunPatch(h, m) }
+                val turned = "mantelTurned" in s.opened
+                mantelTarget = if (turned) 180f else MANTEL_ASKEW
                 parts["mantelDoor"]?.let { d ->
                     val open = "mantel" in s.opened
-                    d.setPos(Vector3(if (open) -0.27f else -0.19f, 0.15f, if (open) 0.08f else 0f))
-                    d.transform().eulerAngles = EulerAngles(0f, if (open) -70f else 0f, 0f)
+                    d.setPos(Vector3(if (open) 0.1f else 0f, 0.2f, if (open) -0.17f else -0.11f))
+                    d.transform().eulerAngles = EulerAngles(0f, if (open) 70f else 0f, 0f)
                 }
                 parts["drawer"]?.setPos(Vector3(0.6f, 0.8f, if ("drawer" in s.opened) -0.98f else -1.18f))
                 glowOf(parts["go:workshop"], 1 in s.parts)
@@ -568,6 +705,33 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             }
             Room.CELLAR -> {
                 for (k in 1..3) parts["ringVis$k"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, -(s.dials["ring$k"] ?: 0) * 30f)
+                glowOf(parts["go:tower"], 4 in s.parts)
+                parts["go:tower"]?.enabled = 4 in s.parts
+            }
+            Room.TOWER -> {
+                val len = Shop.PENDULUM_LENGTH[s.pendulum]
+                parts["pendRod"]?.let { it.setPos(Vector3(0f, -len / 2, 0f)); it.transform().setScaleVector(Vector3(1f, len, 1f)) }
+                parts["pendBob"]?.setPos(Vector3(0f, -len, 0f))
+                parts["dial:pend"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, -(s.pendulum) * 120f)
+                for (k in 1..2) {
+                    val shaft = parts["train$k"] ?: continue
+                    val w = s.train[k]
+                    val shown = shaft.getChildren().firstOrNull { it.getName().startsWith("wheel:") }
+                    if (shown != null && shown.getName() != "wheel:${w?.name}") shaft.removeChild(shown)
+                    if (w != null && shaft.getChildren().none { it.getName() == "wheel:${w.name}" }) {
+                        shaft.addChild(ratioWheel(w, brass).apply { setName("wheel:${w.name}") }.also { lighting.receive(it) })
+                    }
+                    glowOf(shaft, w == null && s.tray.any { it in Shop.RATIOS })
+                }
+                parts["leverArm"]?.transform()?.eulerAngles = EulerAngles(if (s.towerRuns) 35f else -20f, 0f, 0f)
+                glowOf(parts["study"], Item.KEY_STUDY in s.tray)
+            }
+            Room.STUDY -> {
+                parts["studyLamp"]?.getChildren()?.firstOrNull { it.getName() == "bulb" }?.enabled = s.lampOn
+                for ((k, d) in listOf("month" to 30f, "day" to 11.61f, "week" to 51.4f).withIndex()) {
+                    parts["calDial$k"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, -(s.dials[d.first] ?: 0) * d.second)
+                }
+                parts["bigWatch"]?.enabled = s.finished
             }
         }
         syncTray(s, selected)
@@ -584,17 +748,40 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             is Shop.Event.Placed -> spotOf(ev.at)?.let { sparkle.emit(it, 30, 0.4, 1.0, 0.012f) }
             is Shop.Event.Part -> sparkle.emit(traySpot() + Vec3(0.0, 0.15, 0.0), 60, 0.6, 1.4, 0.014f)
             is Shop.Event.Shifted -> dust.emit(Vec3(0.0, 1.5, -1.5), 80, 0.5, 3.0, 0.01f, drift = Vec3(0.0, 0.05, 0.0))
-            Shop.Event.Finished -> spotOf("dial:ring1")?.let { sparkle.emit(it, 120, 0.9, 2.0, 0.016f) }
+            Shop.Event.Finished -> sparkle.emit(Vec3(0.0, 1.42, -1.3), 140, 1.0, 2.2, 0.016f)
+            Shop.Event.TowerRuns -> spotOf("clock:tower")?.let { sparkle.emit(it, 50, 0.6, 1.2, 0.012f) }
             else -> Unit
         }
     }
 
+    private var mantelTarget = 0f
+    private var mantelYaw = MANTEL_ASKEW
+
     fun frame(s: Shop, dt: Double) {
         clock += dt
+        if (s.room == Room.FRONT) parts["mantel"]?.let { m ->
+            if (mantelYaw != mantelTarget) {
+                mantelYaw = (mantelYaw + (if (mantelTarget > mantelYaw) 1 else -1) * (dt * 140).toFloat()).let { if (kotlin.math.abs(it - mantelTarget) < 3f) mantelTarget else it }
+                m.transform().eulerAngles = EulerAngles(0f, mantelYaw, 0f)
+            }
+        }
+        if (s.room == Room.TOWER) {
+            val period = s.pendulumSeconds
+            parts["pendulum"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, (sin(clock * 2 * Math.PI / period) * 7).toFloat())
+            parts["secondHand"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, -(clock.toInt() % 60) * 6f)
+            if (s.towerRuns) {
+                parts["towerWheelA"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, (clock * 14).toFloat())
+                parts["towerWheelB"]?.transform()?.eulerAngles = EulerAngles(0f, 0f, (-clock * 34).toFloat())
+            }
+        }
+        if (s.room == Room.STUDY && s.finished) parts["bigWatch"]?.let { w ->
+            w.transform().eulerAngles = EulerAngles(12f, (clock * 28).toFloat(), 0f)
+            if ((clock * 3).toInt() != ((clock - dt) * 3).toInt()) sparkle.emit(Vec3(0.0, 1.42, -1.3), 8, 0.45, 1.3, 0.012f)
+        }
         sparkle.update(dt, 1.0)
         dust.update(dt, 0.3)
-        // The clockwork bird sings once all is done.
-        if (s.finished && s.room == Room.CELLAR) parts["bird"]?.let { b ->
+        // The clockwork bird sings once its ring is set.
+        if (4 in s.parts && s.room == Room.CELLAR) parts["bird"]?.let { b ->
             b.transform().eulerAngles = EulerAngles(0f, (sin(clock * 2) * 30).toFloat(), (sin(clock * 9) * 8).toFloat())
             if ((clock * 2).toInt() != ((clock - dt) * 2).toInt()) sparkle.emit(Vec3(0.0, 2.1, -1.9), 6, 0.3, 1.2, 0.01f)
         }
@@ -608,11 +795,23 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         selectedItem?.let { i -> trayTokens[i]?.transform()?.setScaleVector(Vector3(1f + 0.08f * sin(clock * 5).toFloat())) }
     }
 
+    /** The sun's patch on the floor follows the big clock, along the numerals, reaching the display case at three. */
+    private fun placeSunPatch(h: Int, m: Int) {
+        val patch = parts["sunPatch"] ?: return
+        val hour = h + m / 60f
+        val daytime = hour in 7f..18f
+        patch.enabled = daytime
+        if (!daytime) return
+        val t = ((hour - 9f) / 6f)
+        patch.setPos(Vector3(-2.55f + 1.1f * t, 0.008f, -0.66f - 0.64f * t))
+    }
+
     /** Which way clock [c]'s face is turned (degrees about y, in the room). */
     fun faceYaw(c: String) = if (c == "attic") 90f else 0f
 
     /** Shows [h]:[m] on clock [c] while its hands are being turned (the move comes on release). */
     fun showHands(c: String, h: Int, m: Int) {
+        if (c == "big") placeSunPatch(h, m)
         val (hour, minute) = hands[c] ?: return
         hour.transform().eulerAngles = EulerAngles(0f, 0f, -((h % 12) * 30f + m * 0.5f))
         minute.transform().eulerAngles = EulerAngles(0f, 0f, -m * 6f)
@@ -620,14 +819,17 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
 
     /** The clock that rules this room (its ticking comes from there). */
     fun mainClock(s: Shop): Vec3 = when (s.room) {
-        Room.FRONT -> spotOf("clock:big")
+        Room.FRONT -> if ("mantelTurned" in s.opened) spotOf("clock:big") else spotOf("mantel")
         Room.WORKSHOP -> spotOf("clock:wall")
         Room.ATTIC -> spotOf("clock:attic")
         Room.CELLAR -> spotOf("dial:ring1")
+        Room.TOWER -> spotOf("clock:tower")
+        Room.STUDY -> spotOf("cabinet")
     } ?: Vec3(0.0, 1.5, -2.0)
 
     companion object {
         const val MIN_HIT = 0.14f
+        const val MANTEL_ASKEW = 32f
         const val TRAY_Y = 0.86f
         const val TRAY_Z = -0.46f
         val GEAR_R = mapOf(Item.GEAR_L to 0.075f, Item.GEAR_M to 0.055f, Item.GEAR_S to 0.038f)

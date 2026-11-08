@@ -27,6 +27,8 @@ enum class Mood(val ibl: String, val ambient: Float, val lux: Float, val light: 
     /** The attic on 12 March 1936, four in the afternoon: warm and a little faded. */
     THAT_DAY("textures/ibl_old.ktx", 0.46f, 1200f, Color4(1f, 0.85f, 0.65f, 1f)),
     CELLAR("textures/ibl_night.ktx", 0.24f, 350f, Color4(0.9f, 0.8f, 0.65f, 1f)),
+    /** The study before its lamp is lit. */
+    DARK("textures/ibl_night.ktx", 0.08f, 40f, Color4(0.6f, 0.65f, 0.9f, 1f)),
 }
 
 /**

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,15 +14,29 @@ android {
         applicationId = "com.vrgames.clockshop"
         minSdk = 35
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters.add("arm64-v8a") }
     }
 
+    // The shared VRGames release key lives outside the repo (see signing/README.md in the workspace).
+    // Without it, release builds are unsigned, so the open-source code still builds anywhere.
+    val signingProps = file(System.getenv("VRGAMES_SIGNING") ?: "../../../../signing/keystore.properties")
+    val releaseSigning = if (signingProps.isFile) {
+        val p = Properties().apply { signingProps.inputStream().use { load(it) } }
+        signingConfigs.create("release") {
+            storeFile = signingProps.resolveSibling(p.getProperty("storeFile"))
+            storePassword = p.getProperty("storePassword")
+            keyAlias = p.getProperty("keyAlias")
+            keyPassword = p.getProperty("keyPassword")
+        }
+    } else null
+
     buildTypes {
         release {
+            signingConfig = releaseSigning
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

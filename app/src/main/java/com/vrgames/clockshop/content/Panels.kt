@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,20 +39,29 @@ const val PANEL_RESULT = "result"
 const val PANEL_MENU = "menu"
 const val PANEL_NOTE = "note"
 
-val LabelInk = Color(0xFFF4EEE2)
-val Brass = Color(0xFFE2B75A)
-val Dim = Color(0xFFC2B8A6)
-val Jade = Color(0xFF8FD3A8)
-val Clay = Color(0xFFE07A4F)
-private val PanelBg = Color(0xE61A1510)
+// Ink on the cream letter paper in the mahogany frames.
+val LabelInk = Color(0xFF2B1D12)
+val Brass = Color(0xFF7A2E12)
+val Dim = Color(0xFF6B5A47)
+val Jade = Color(0xFF1F5B3A)
+val Clay = Color(0xFFA33A17)
+private val PanelBg = Color(0xFFEFE3C8)
 /** Window backdrop: the system glass can be light, and every text color here is meant for dark. */
-val WindowBg = Color(0xF21A1510)
+val WindowBg = Color(0xFFEFE3C8)
 
 @Composable
 fun PhysicalLengthConverter.m(meters: Float): Dp = lengthToDp(meters, LengthUnit.Meters)
 
 @Composable
 fun PhysicalLengthConverter.sz(meters: Float) = m(meters).value.sp
+
+@Composable
+private fun Letter(c: PhysicalLengthConverter, width: Float, height: Float, content: @Composable () -> Unit) {
+    Column(
+        Modifier.width(c.m(width)).height(c.m(height)).padding(horizontal = c.m(0.016f), vertical = c.m(0.006f)),
+        verticalArrangement = Arrangement.spacedBy(c.m(0.006f), Alignment.CenterVertically),
+    ) { content() }
+}
 
 @Composable
 private fun PanelBox(c: PhysicalLengthConverter, width: Float, content: @Composable () -> Unit) {
@@ -90,7 +100,7 @@ fun Pill(c: PhysicalLengthConverter, text: String, color: Color = Dim, onClick: 
 @Composable
 fun CardPanel(c: PhysicalLengthConverter, resumed: Boolean) {
     @Suppress("UNUSED_VARIABLE") val v = Game.version
-    PanelBox(c, 0.5f) {
+    Letter(c, 0.52f, 0.3f) {
         Text("钟表店密室", fontSize = c.sz(0.032f), color = Brass)
         Text("老钟表匠走了，给你留下这间铺子和一封信：“铺子里藏着我一生最得意的作品。钟会带你回到我想让你看见的时刻。”", fontSize = c.sz(0.016f), color = LabelInk)
         Text("怎么玩", fontSize = c.sz(0.018f), color = Jade)
@@ -104,9 +114,9 @@ fun CardPanel(c: PhysicalLengthConverter, resumed: Boolean) {
 fun HudPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
     @Suppress("UNUSED_VARIABLE") val v = Game.version
     val s = Game.shop
-    PanelBox(c, 0.25f) {
+    Letter(c, 0.34f, 0.27f) {
         Text(s.room.title, fontSize = c.sz(0.022f), color = Brass)
-        Text("怀表零件 " + (1..4).joinToString("") { if (it in s.parts) "●" else "○" }, fontSize = c.sz(0.016f), color = LabelInk)
+        Text("怀表零件 " + (1..6).joinToString("") { if (it in s.parts) "●" else "○" }, fontSize = c.sz(0.016f), color = LabelInk)
         val sel = Game.selected
         if (sel != null) Text("手里：${sel.label}", fontSize = c.sz(0.015f), color = Jade)
         else if (s.tray.isNotEmpty()) Text("捏托盘里的东西选中它", fontSize = c.sz(0.013f), color = Dim)
@@ -123,7 +133,7 @@ fun ToolPanel(c: PhysicalLengthConverter) {
     @Suppress("UNUSED_VARIABLE") val v = Game.version
     val t = Game.tool ?: return
     val s = Game.shop
-    PanelBox(c, 0.4f) {
+    Letter(c, 0.44f, 0.24f) {
         when {
             t.startsWith("clock:") -> {
                 val id = t.removePrefix("clock:")
@@ -146,6 +156,19 @@ fun ToolPanel(c: PhysicalLengthConverter) {
                 Dials(c, listOf("ring1" to "日环（外）", "ring2" to "月环（中）", "ring3" to "星环（内）")) {
                     val n = s.dials[it] ?: 0
                     "${if (n == 0) 12 else n} 点"
+                }
+                Text("对照墙上的三块铜牌：日、月、星。", fontSize = c.sz(0.014f), color = Dim)
+            }
+            t == "pendulum" -> {
+                Text("钟摆的摆长", fontSize = c.sz(0.022f), color = Brass)
+                Dials(c, listOf("pend" to "摆长")) { "${Shop.PENDULUM_LENGTH[s.pendulum]} 米" }
+                Text("现在一来一回 ${Shop.PENDULUM_LABEL[s.pendulum]}。摆越长，摆得越慢。", fontSize = c.sz(0.015f), color = LabelInk)
+            }
+            t == "calendar" -> {
+                Text("万年历", fontSize = c.sz(0.022f), color = Brass)
+                Dials(c, listOf("month" to "月", "day" to "日", "week" to "星期")) {
+                    val n = (s.dials[it] ?: 0) + 1
+                    if (it == "week") listOf("一", "二", "三", "四", "五", "六", "日")[n - 1] else "$n"
                 }
             }
         }
@@ -172,9 +195,9 @@ private fun Dials(c: PhysicalLengthConverter, dials: List<Pair<String, String>>,
 fun ResultPanel(c: PhysicalLengthConverter) {
     @Suppress("UNUSED_VARIABLE") val v = Game.version
     val s = Game.shop
-    PanelBox(c, 0.46f) {
+    Letter(c, 0.5f, 0.27f) {
         Text("师傅的作品", fontSize = c.sz(0.03f), color = Brass)
-        Text("四枚零件合成了一块完整的怀表。表盖里刻着：“给愿意花时间的人。”", fontSize = c.sz(0.017f), color = LabelInk)
+        Text("六枚零件合成了一块完整的怀表。表盖里刻着：“给愿意花时间的人。”", fontSize = c.sz(0.017f), color = LabelInk)
         val min = (Game.played / 60).toInt()
         Text("用时${if (min < 1) "不到 1" else "约 $min"} 分钟，用了 ${s.hints} 次提示。", fontSize = c.sz(0.016f), color = Jade)
         Text(if (s.hints == 0) "一次提示也没用：真正的钟表匠！" else "线索簿里收着这一路的信、照片和草图。", fontSize = c.sz(0.015f), color = Dim)
@@ -187,8 +210,7 @@ fun ResultPanel(c: PhysicalLengthConverter) {
 @Composable
 fun NotePanel(c: PhysicalLengthConverter) {
     val n = Game.note ?: return
-    val shape = RoundedCornerShape(c.m(0.012f))
-    Text(n, Modifier.widthIn(max = c.m(0.44f)).clip(shape).background(PanelBg).padding(c.m(0.01f)), fontSize = c.sz(0.016f), color = Brass)
+    Text(n, Modifier.width(c.m(0.5f)).height(c.m(0.13f)).padding(horizontal = c.m(0.014f), vertical = c.m(0.006f)), fontSize = c.sz(0.0165f), color = Brass)
 }
 
 @Composable
