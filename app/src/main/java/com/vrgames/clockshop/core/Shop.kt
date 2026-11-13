@@ -305,7 +305,7 @@ class Shop {
 
     fun setDial(d: String, value: Int): List<Event> {
         steps++
-        val max = DIAL_STEPS[d] ?: if (d.startsWith("safe")) 10 else 12
+        val max = dialSteps(d)
         dials[d] = ((value % max) + max) % max
         if (d.startsWith("ring") && room == Room.CELLAR && dials["ring1"] == 3 && dials["ring2"] == 10 && dials["ring3"] == 4 && 4 !in parts) {
             return listOf(
@@ -379,6 +379,9 @@ class Shop {
         val PENDULUM_LABEL = listOf("1 秒", "2 秒", "3 秒")
         val PENDULUM_LENGTH = listOf(.25f, 1f, 2.25f)
         val DIAL_STEPS = mapOf("pend" to 3, "month" to 12, "day" to 31, "week" to 7)
+
+        /** How many positions dial [d] has. */
+        fun dialSteps(d: String) = DIAL_STEPS[d] ?: if (d.startsWith("safe")) 10 else 12
         val GEAR_FOR = mapOf(1 to Item.GEAR_L, 2 to Item.GEAR_M, 3 to Item.GEAR_S)
         val PHOTO_ORDER = listOf(Item.PHOTO_1, Item.PHOTO_2, Item.PHOTO_3, Item.PHOTO_4, Item.PHOTO_5)
         val CLOCK_ROOM = mapOf("big" to Room.FRONT, "wall" to Room.WORKSHOP, "attic" to Room.ATTIC, "tower" to Room.TOWER)

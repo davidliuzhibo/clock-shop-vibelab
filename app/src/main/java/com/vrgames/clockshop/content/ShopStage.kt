@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import com.pico.spatial.core.container.SpatialViewContent
 import com.pico.spatial.core.ecs.DirectionalLightComponent
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LoadType
@@ -42,6 +43,7 @@ import com.vrgames.clockshop.GUIDE_ID
 import com.vrgames.clockshop.core.Shop
 import com.vrgames.clockshop.game.AutoPilot
 import com.vrgames.clockshop.game.Game
+import com.vrgames.clockshop.render.HandTurn
 import com.vrgames.clockshop.render.Lighting
 import com.vrgames.clockshop.render.Music
 import com.vrgames.clockshop.render.RoomView
@@ -79,7 +81,11 @@ fun ShopStage() {
     val place = remember { Seat() }
     val panels = remember { HashMap<String, Entity>() }
     val turning = remember { ClockTurn() }
-    val lastTap = remember { arrayOf("", 0L) }
+    val dialing = remember { DialTurn() }
+    // The hand's own turn while it pinches a clock or a dial (twisting the wrist, as on a knob).
+    val handTurn = remember { HandTurn() }
+    val contentRef = remember { arrayOfNulls<SpatialViewContent>(1) }
+    val lastTap = remember { arrayOf<Any>("", 0L) }
     val appVersion = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty() }
 
     val toggleWindow: (String) -> Unit = { id ->
@@ -142,9 +148,15 @@ fun ShopStage() {
         synchronized(Game.lock) { v.sync(Game.shop, Game.selected) }
     }
     LaunchedEffect(Game.faceRequest) { if (Game.faceRequest > 0) place.again() }
+    // A clock's slider moving: its hands follow (the move is made when the slider is let go).
+    LaunchedEffect(Game.sliderTime, view) {
+        val (c, t) = Game.sliderTime ?: return@LaunchedEffect
+        view?.let { v -> synchronized(Game.lock) { v.showHands(c, t / 60, t % 60) } }
+    }
     LaunchedEffect(Game.noteVersion) {
         val n = Game.note ?: return@LaunchedEffect
-        kotlinx.coroutines.delay(if (n.length > 40) 9000 else 6000)
+        // Long enough to turn to it and read it; the next note replaces it anyway.
+        kotlinx.coroutines.delay(if (n.length > 40) 25000 else 16000)
         if (Game.note == n) Game.note = null
     }
     // Panels: one explanation at a time.
@@ -153,7 +165,8 @@ fun ShopStage() {
         val playing = Game.phase == Game.Phase.PLAYING
         show(PANEL_CARD, Game.phase == Game.Phase.CARD)
         show(PANEL_RESULT, Game.phase == Game.Phase.RESULT)
-        show(PANEL_HUD, playing)
+        // The clock and dial controls take the hud's place at the lower right, out of the way of the room.
+        show(PANEL_HUD, playing && Game.tool == null)
         show(PANEL_TOOL, playing && Game.tool != null)
         show(PANEL_NOTE, Game.note != null)
         show(PANEL_MENU, true)
@@ -193,19 +206,58 @@ fun ShopStage() {
                             val c = id.removePrefix("clock:")
                             val (h, m) = Game.shop.clocks[c] ?: return@detectSpatialDragGesture
                             turning.begin(c, h, m, v.faceYaw(c) + place.facing)
-                            main.post { Game.tool = id }
+                            handTurn.reset()
+                            handTurn.twist(contentRef[0], runCatching { value.inputDevicePose.rawRotation.toQuaternion() }.getOrNull(), 0.0, 0.0, 1.0)
+                            main.post {
+                                Game.tool = id
+                                Game.turningText = Game.timeText(h, m)
+                            }
+                        } else if (id.startsWith("dial:")) {
+                            // A dial held and moved up or down turns step by step (a still pinch turns it once).
+                            val d = id.removePrefix("dial:")
+                            // Its face is taken to look at the seat (dials sit all round the room).
+                            val at = v.spotOf(id)
+                            val toSeat = if (at != null) Math.toDegrees(atan2(-at.x, -at.z)).toFloat() else 0f
+                            dialing.begin(d, toSeat + place.facing)
+                            handTurn.reset()
+                            handTurn.twist(contentRef[0], runCatching { value.inputDevicePose.rawRotation.toQuaternion() }.getOrNull(), 0.0, 0.0, 1.0)
+                            main.post {
+                                val now = SystemClock.uptimeMillis()
+                                // The same pinch already came as a tap and turned it once.
+                                if (lastTap[0] == id && now - (lastTap[1] as Long) < 500) dialing.tapped = true
+                                lastTap[0] = id
+                                lastTap[1] = now
+                                Game.tool = toolOfDial(d)
+                            }
                         } else {
                             main.post { pinch(id) }
                         }
                     },
-                    onDragEnd = { main.post { turning.end()?.let { (c, h, m) -> Game.act("clock $c $h $m") } } },
-                    onDragCancel = { main.post { turning.end()?.let { (c, h, m) -> Game.act("clock $c $h $m") } } },
+                    onDragEnd = { main.post { endTurns(turning, dialing, lastTap) } },
+                    onDragCancel = { main.post { endTurns(turning, dialing, lastTap) } },
                 ) { value ->
-                    if (!turning.active) return@detectSpatialDragGesture
                     // Compose y points down.
-                    val steps = turning.move(meters(value.dragAmount.x), -meters(value.dragAmount.y), meters(value.dragAmount.z))
-                    if (steps != 0) main.post { Game.sound?.play(Sfx.TICK) }
-                    turning.preview()?.let { (c, h, m) -> view?.let { v -> synchronized(Game.lock) { v.showHands(c, h, m) } } }
+                    val raw = runCatching { value.inputDevicePose.rawRotation.toQuaternion() }.getOrNull()
+                    if (dialing.active) {
+                        // Up, or a clockwise twist of the wrist (as seen facing the dial), turns it on.
+                        val yaw = Math.toRadians(dialing.faceYaw)
+                        val twisted = -handTurn.twist(contentRef[0], raw, sin(yaw), 0.0, cos(yaw))
+                        val n = dialing.move(-meters(value.dragAmount.y), twisted)
+                        if (n != 0) main.post { dialing.name?.let { Game.turnDial(it, n) } }
+                        return@detectSpatialDragGesture
+                    }
+                    if (!turning.active) return@detectSpatialDragGesture
+                    // The face looks along its yaw; a twist about that axis toward the player is counterclockwise.
+                    val yaw = turning.faceYawRad
+                    val twisted = -handTurn.twist(contentRef[0], raw, sin(yaw), 0.0, cos(yaw))
+                    val steps = turning.move(meters(value.dragAmount.x), -meters(value.dragAmount.y), meters(value.dragAmount.z), twisted * ClockTurn.TWIST_MIN_PER_DEG)
+                    turning.preview()?.let { (c, h, m) ->
+                        view?.let { v -> synchronized(Game.lock) { v.showHands(c, h, m) } }
+                        if (steps != 0) main.post {
+                            Game.sound?.play(Sfx.TICK)
+                            if (turning.active) Game.turningText = Game.timeText(h, m)
+                        }
+                    }
                 }
             },
         attachments = {
@@ -225,6 +277,7 @@ fun ShopStage() {
                 components[TransformComponent::class.java]?.setEulerAngles(EulerAngles(-45f, -35f, 0f))
             }
             content.addEntity(sun)
+            contentRef[0] = content
             val lighting = Lighting(sun)
             content.addEntity(lighting.source)
             val tex = HashMap<String, TextureResource>()
@@ -295,12 +348,7 @@ private fun onThing(id: String, toggle: (String) -> Unit) {
         }
         kind == "clock" -> Game.tool = id
         kind == "dial" -> {
-            Game.tool = when {
-                name.startsWith("safe") -> "safe"
-                name == "pend" -> "pendulum"
-                name in setOf("month", "day", "week") -> "calendar"
-                else -> "rings"
-            }
+            Game.tool = toolOfDial(name)
             Game.turnDial(name)
         }
         id == "letter" -> {
@@ -349,6 +397,28 @@ private fun onThing(id: String, toggle: (String) -> Unit) {
     }
 }
 
+/** The panel a dial belongs to. */
+private fun toolOfDial(name: String) = when {
+    name.startsWith("safe") -> "safe"
+    name == "pend" -> "pendulum"
+    name in setOf("month", "day", "week") -> "calendar"
+    else -> "rings"
+}
+
+/** A held pinch let go: a clock takes the time its hands were turned to; a dial just stops. */
+private fun endTurns(turning: ClockTurn, dialing: DialTurn, lastTap: Array<Any>) {
+    turning.end()?.let { (c, h, m) -> Game.act("clock $c $h $m") }
+    Game.turningText = null
+    dialing.name?.let {
+        // A pinch that hardly moved is a still pinch: one step, as a tap gives.
+        if (dialing.turned == 0 && !dialing.tapped) Game.turnDial(it)
+        // The pinch's own tap may come on release: it should not turn the dial once more.
+        lastTap[0] = "dial:$it"
+        lastTap[1] = SystemClock.uptimeMillis()
+    }
+    dialing.end()
+}
+
 private fun refuse(why: String) {
     Game.say(why)
     Game.sound?.play(Sfx.WRONG)
@@ -372,19 +442,22 @@ private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<Strin
         val e = a.entity(id) ?: return
         if (panels[id] === e) return
         panels[id] = e
-        v.trayRoot.addChild(e)
+        // In the room, not on the tray: the tray swings round after the head, and panels on it followed the head and
+        // could not be read (device test 2026-11-12). Placed once with the room, they stay put.
+        v.root.addChild(e)
         e.setPos(pos)
         PANEL_FRAMES[id]?.let { name -> v.frame(name)?.let { f -> f.setPos(Vector3(0f, 0f, -0.006f)); e.addChild(f) } }
         e.transform().eulerAngles = EulerAngles(pitch, yaw, 0f)
     }
-    // All in the tray's frame, so they stay in front as the player turns. Card and result ahead at
-    // eye height; the hud at the right of the tray; the clock and dial controls just above the tray,
-    // below the line of sight to the room; notes above them.
+    // In the room's frame (the seat's facing), fixed once placed. Card and result ahead at
+    // eye height (they ask for the player's attention). While playing nothing stands straight ahead
+    // (2026-11-10 review: panels hid the things to work on): the hud, or in its place the clock and dial
+    // controls, low at the right of the tray; notes low at the left, above the menu tab.
     put(PANEL_CARD, Vector3(0f, 1.2f, -0.85f), 0f)
     put(PANEL_RESULT, Vector3(0f, 1.2f, -0.85f), 0f)
     put(PANEL_HUD, Vector3(0.42f, 0.9f, -0.5f), -22f, -32f)
-    put(PANEL_TOOL, Vector3(0f, 1.0f, -0.55f), -18f)
-    put(PANEL_NOTE, Vector3(0f, 1.12f, -0.7f), -8f)
+    put(PANEL_TOOL, Vector3(0.4f, 0.93f, -0.5f), -22f, -32f)
+    put(PANEL_NOTE, Vector3(-0.4f, 1.0f, -0.52f), -16f, 32f)
     put(PANEL_MENU, MENU_POS, -30f, 30f)
 }
 
@@ -497,21 +570,31 @@ private class ClockTurn {
         lastStep = (minutes / 5).roundToInt()
     }
 
-    /** Moves by a hand motion (room frame, meters); returns how many five-minute steps it crossed. */
-    fun move(dx: Double, dy: Double, dz: Double): Int {
+    val faceYawRad get() = faceYaw
+
+    /**
+     * Moves by a hand motion (room frame, meters) or a twist of the wrist ([twistMinutes], already in
+     * minutes; the larger of the two counts); returns how many five-minute steps it crossed.
+     */
+    fun move(dx: Double, dy: Double, dz: Double, twistMinutes: Double = 0.0): Int {
         // Across the face: its right is the room's x turned by the face's yaw.
         val du = dx * cos(faceYaw) - dz * sin(faceYaw)
         val before = atan2(u, v)
-        u += du * GAIN
-        v += dy * GAIN
+        var pu = u + du * GAIN
+        var pv = v + dy * GAIN
         // Kept near the circle, so a long drag does not leave the point far from the middle or on it.
-        val r = hypot(u, v).coerceAtLeast(1e-6)
-        u = u / r * R
-        v = v / r * R
-        var d = atan2(u, v) - before
+        val r = hypot(pu, pv).coerceAtLeast(1e-6)
+        pu = pu / r * R
+        pv = pv / r * R
+        var d = atan2(pu, pv) - before
         if (d > Math.PI) d -= 2 * Math.PI
         if (d < -Math.PI) d += 2 * Math.PI
-        minutes += Math.toDegrees(d) / 6.0
+        val dragMinutes = Math.toDegrees(d) / 6.0
+        minutes += if (kotlin.math.abs(twistMinutes) > kotlin.math.abs(dragMinutes)) twistMinutes else dragMinutes
+        // The point follows the minute hand, so drag and twist can take turns.
+        val a = Math.toRadians(minutes * 6.0)
+        u = R * sin(a)
+        v = R * cos(a)
         val step = (minutes / 5).roundToInt()
         val n = step - lastStep
         lastStep = step
@@ -535,6 +618,51 @@ private class ClockTurn {
     companion object {
         const val R = 0.1
         const val GAIN = 1.5
+        /** A quarter turn of the wrist moves the hands three hours. */
+        const val TWIST_MIN_PER_DEG = 2.0
+    }
+}
+
+/** A dial turned by a held pinch: one step for every [STEP] meters the hand moves up (or down, back). */
+private class DialTurn {
+    var name: String? = null; private set
+    val active get() = name != null
+    private var along = 0.0
+    /** Steps turned since the pinch began. */
+    var turned = 0; private set
+    /** The pinch also came as a tap (which turned the dial once already). */
+    var tapped = false
+
+    /** Which way the dial's face looks (degrees about y in the content's frame). */
+    var faceYaw = 0.0; private set
+
+    fun begin(d: String, yawDeg: Float) {
+        name = d
+        along = 0.0
+        turned = 0
+        tapped = false
+        faceYaw = yawDeg.toDouble()
+    }
+
+    /** Moves by [dy] meters up or [twistDeg] of clockwise wrist turn (the larger counts); returns the whole steps crossed. */
+    fun move(dy: Double, twistDeg: Double = 0.0): Int {
+        if (name == null) return 0
+        val twisted = twistDeg / TWIST_DEG_PER_STEP * STEP
+        along += if (kotlin.math.abs(twisted) > kotlin.math.abs(dy)) twisted else dy
+        val n = (along / STEP).toInt()
+        along -= n * STEP
+        turned += kotlin.math.abs(n)
+        return n
+    }
+
+    fun end() {
+        name = null
+    }
+
+    companion object {
+        const val STEP = 0.03
+        /** Wrist degrees per step of a dial. */
+        const val TWIST_DEG_PER_STEP = 25.0
     }
 }
 

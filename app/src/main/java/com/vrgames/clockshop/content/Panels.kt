@@ -15,7 +15,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -23,7 +26,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import com.pico.spatial.ui.design.Button
+import com.pico.spatial.ui.design.Slider
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.platform.LengthUnit
 import com.pico.spatial.ui.platform.PhysicalLengthConverter
@@ -137,54 +142,75 @@ fun ToolPanel(c: PhysicalLengthConverter) {
         when {
             t.startsWith("clock:") -> {
                 val id = t.removePrefix("clock:")
-                Text("${CLOCK_NAMES[id] ?: "钟"}　${Game.clockText(id)}", fontSize = c.sz(0.022f), color = Brass)
-                Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.008f)), verticalAlignment = Alignment.CenterVertically) {
-                    Pill(c, "−1 小时", LabelInk) { Game.turnClock(id, -60) }
-                    Pill(c, "−5 分", LabelInk) { Game.turnClock(id, -5) }
-                    Pill(c, "+5 分", LabelInk) { Game.turnClock(id, 5) }
-                    CallToAction(c, "+1 小时") { Game.turnClock(id, 60) }
-                }
-                Text("也可以捏住钟面，绕着画圈拨动指针。", fontSize = c.sz(0.013f), color = Dim)
+                Text(CLOCK_NAMES[id] ?: "钟", fontSize = c.sz(0.016f), color = Dim)
+                // While the hands are being turned the time follows them, not the last time set.
+                val sliding = Game.sliderTime?.takeIf { it.first == id }?.second
+                Text(Game.turningText ?: sliding?.let { Game.timeText(it / 60, it % 60) } ?: Game.clockText(id), fontSize = c.sz(0.03f), color = Brass)
+                Text("捏住钟面（分针头上的铜钮）绕圈拨，或像拧旋钮一样转手腕。", fontSize = c.sz(0.014f), color = LabelInk)
+                // PICO's advice (2026-11-12): a slider instead of steps by button, for a smooth turn.
+                if (Game.fineButtons) ClockSlider(c, id)
+                else Pill(c, "用滑动条拨", Dim) { Game.fineButtons = true }
             }
             t == "safe" -> {
                 Text("保险柜的密码转盘", fontSize = c.sz(0.022f), color = Brass)
-                Dials(c, listOf("safe1" to "第一位", "safe2" to "第二位", "safe3" to "第三位")) { "${s.dials[it] ?: 0}" }
-                if ("safe" !in s.opened) Text("三位都对了，柜门会自己打开。", fontSize = c.sz(0.013f), color = Dim)
+                Dials(c, listOf("safe1" to "第一位", "safe2" to "第二位", "safe3" to "第三位")) { _, n -> "$n" }
+                if ("safe" !in s.opened) Text("捏住转盘上下拨或拧一拧手腕，也可以拉滑条。三位都对了，柜门会自己打开。", fontSize = c.sz(0.013f), color = Dim)
             }
             t == "rings" -> {
                 Text("天文钟的三个环", fontSize = c.sz(0.022f), color = Brass)
-                Dials(c, listOf("ring1" to "日环（外）", "ring2" to "月环（中）", "ring3" to "星环（内）")) {
-                    val n = s.dials[it] ?: 0
-                    "${if (n == 0) 12 else n} 点"
-                }
-                Text("对照墙上的三块铜牌：日、月、星。", fontSize = c.sz(0.014f), color = Dim)
+                Dials(c, listOf("ring1" to "日环（外）", "ring2" to "月环（中）", "ring3" to "星环（内）")) { _, n -> "${if (n == 0) 12 else n} 点" }
+                Text("捏住铜环上下拨或拧手腕。对照墙上的三块铜牌：日、月、星。", fontSize = c.sz(0.014f), color = Dim)
             }
             t == "pendulum" -> {
                 Text("钟摆的摆长", fontSize = c.sz(0.022f), color = Brass)
-                Dials(c, listOf("pend" to "摆长")) { "${Shop.PENDULUM_LENGTH[s.pendulum]} 米" }
+                Dials(c, listOf("pend" to "摆长")) { _, n -> "${Shop.PENDULUM_LENGTH[n]} 米" }
                 Text("现在一来一回 ${Shop.PENDULUM_LABEL[s.pendulum]}。摆越长，摆得越慢。", fontSize = c.sz(0.015f), color = LabelInk)
             }
             t == "calendar" -> {
                 Text("万年历", fontSize = c.sz(0.022f), color = Brass)
-                Dials(c, listOf("month" to "月", "day" to "日", "week" to "星期")) {
-                    val n = (s.dials[it] ?: 0) + 1
-                    if (it == "week") listOf("一", "二", "三", "四", "五", "六", "日")[n - 1] else "$n"
+                Dials(c, listOf("month" to "月", "day" to "日", "week" to "星期")) { d, v ->
+                    if (d == "week") listOf("一", "二", "三", "四", "五", "六", "日")[v] else "${v + 1}"
                 }
             }
         }
-        Pill(c, "好了") { Game.tool = null }
+        Pill(c, "好了") { Game.tool = null; Game.fineButtons = false }
     }
 }
 
+/** A clock's time on a slider, a whole day in five-minute stops; the hands follow while it moves. */
 @Composable
-private fun Dials(c: PhysicalLengthConverter, dials: List<Pair<String, String>>, value: (String) -> String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.018f))) {
+private fun ClockSlider(c: PhysicalLengthConverter, id: String) {
+    val (h, m) = Game.shop.clocks[id] ?: return
+    val now = Game.sliderTime?.takeIf { it.first == id }?.second ?: (h * 60 + m)
+    Slider(
+        value = now.toFloat(),
+        onValueChange = { v -> Game.sliderTime = id to ((v / 5).roundToInt() * 5).coerceIn(0, 1435) },
+        modifier = Modifier.width(c.m(0.38f)),
+        valueRange = 0f..1435f,
+        onValueChangeFinished = { Game.sliderTime?.let { (cl, t) -> Game.setClock(cl, t) } },
+    )
+    Text("拉动滑条：从左到右是一整天（0 点到 24 点）。", fontSize = c.sz(0.012f), color = Dim)
+}
+
+/** The dials of one thing, each a slider; a pinch on a dial in the room, or a twist of the wrist, turns it too. */
+@Composable
+private fun Dials(c: PhysicalLengthConverter, dials: List<Pair<String, String>>, value: (String, Int) -> String) {
+    Column(verticalArrangement = Arrangement.spacedBy(c.m(0.004f))) {
         for ((d, name) in dials) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(c.m(0.005f))) {
-                Text(name, fontSize = c.sz(0.014f), color = Dim)
-                Pill(c, "▲", LabelInk) { Game.turnDial(d, 1) }
-                Text(value(d), fontSize = c.sz(0.026f), color = Brass)
-                Pill(c, "▼", LabelInk) { Game.turnDial(d, -1) }
+            val steps = Shop.dialSteps(d)
+            val cur = Game.shop.dials[d] ?: 0
+            // Moved freely, set (one move, one click) when let go.
+            var moving by remember(d) { mutableStateOf<Int?>(null) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(c.m(0.01f))) {
+                Text(name, Modifier.width(c.m(0.09f)), fontSize = c.sz(0.014f), color = Dim)
+                Slider(
+                    value = (moving ?: cur).toFloat(),
+                    onValueChange = { v -> moving = v.roundToInt().coerceIn(0, steps - 1) },
+                    modifier = Modifier.width(c.m(0.22f)),
+                    valueRange = 0f..(steps - 1).toFloat(),
+                    onValueChangeFinished = { moving?.let { Game.setDial(d, it) }; moving = null },
+                )
+                Text(moving?.let { m -> value(d, m) } ?: value(d, cur), Modifier.width(c.m(0.08f)), fontSize = c.sz(0.022f), color = Brass)
             }
         }
     }

@@ -39,6 +39,12 @@ object Game {
     var noteVersion by mutableIntStateOf(0); private set
     /** The clock or the dials whose panel is open ("clock:big", "safe", "rings"), or null. */
     var tool by mutableStateOf<String?>(null)
+    /** The time shown while a clock's hands are being turned by hand ("clock:big" to "下午 3:05"), else null. */
+    var turningText by mutableStateOf<String?>(null)
+    /** The ±1 hour / ±5 minute buttons, folded away unless asked for (the hands are turned by hand). */
+    var fineButtons by mutableStateOf(false)
+    /** A clock's time while its slider is being moved (clock id to minutes of the day), shown on its hands. */
+    var sliderTime by mutableStateOf<Pair<String, Int>?>(null)
     var selected by mutableStateOf<Shop.Item?>(null)
     var menuOpen by mutableStateOf(false)
     var confirmRestart by mutableStateOf(false)
@@ -158,6 +164,11 @@ object Game {
     /** The current time on clock [c], as the player reads it. */
     fun clockText(c: String): String {
         val (h, m) = shop.clocks[c] ?: return ""
+        return timeText(h, m)
+    }
+
+    /** [h]:[m] as the player reads it (上午 9:05). */
+    fun timeText(h: Int, m: Int): String {
         val part = when (h) {
             in 0..4 -> "凌晨"
             in 5..10 -> "上午"
@@ -168,6 +179,22 @@ object Game {
         }
         val h12 = if (h % 12 == 0) 12 else h % 12
         return "$part $h12:${"%02d".format(m)}"
+    }
+
+    /** Sets clock [c] to [total] minutes of the day (from its slider) as one move. */
+    fun setClock(c: String, total: Int) {
+        val t = ((total % 1440) + 1440) % 1440
+        sliderTime = null
+        val (h, m) = shop.clocks[c] ?: return
+        if (h * 60 + m == t) return
+        sound?.play(Sfx.TICK)
+        act("clock $c ${t / 60} ${t % 60}")
+    }
+
+    /** Sets dial [d] to [value] (from its slider) as one move; the safe opens by itself once right. */
+    fun setDial(d: String, value: Int) {
+        val v = shop.dials[d] ?: 0
+        if (v != value) turnDial(d, value - v)
     }
 
     /** Turns clock [c] by [minutes] (either way) and makes it a move. */

@@ -153,6 +153,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         hour.addChild(model(MeshResource.createBox(Vector3(0.025f, r * 0.55f, 0.006f), 0f), dark).apply { setPos(Vector3(0f, r * 0.25f, 0f)) })
         val minute = Entity().apply { setPos(Vector3(0f, 0f, 0.028f)) }
         minute.addChild(model(MeshResource.createBox(Vector3(0.016f, r * 0.85f, 0.006f), 0f), dark).apply { setPos(Vector3(0f, r * 0.38f, 0f)) })
+        // A brass knob at the minute hand's tip: the thing to hold and turn round (2026-11-10 review).
+        minute.addChild(model(sphere, brass).apply { setScale(max(0.022f, r * 0.12f)); setPos(Vector3(0f, r * 0.72f, 0.008f)) })
         face.addChild(hour)
         face.addChild(minute)
         face.addChild(model(sphere, brass).apply { setScale(0.018f); setPos(Vector3(0f, 0f, 0.034f)) })
