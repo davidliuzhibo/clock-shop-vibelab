@@ -107,8 +107,10 @@ fun ShopStage() {
         }
     }
 
+    com.vrgames.clockshop.platform.AppExit.TrackStage()
     DisposableEffect(Unit) {
         Game.init(context)
+        com.vrgames.clockshop.platform.AppExit.stageAlive = true
         Game.resumed = Game.phase != Game.Phase.CARD
         if (Game.phase == Game.Phase.PLAYING) Game.phase = Game.Phase.CARD
         Game.closeWindow = { id ->
@@ -119,6 +121,7 @@ fun ShopStage() {
         val hd = runCatching { head.start() }
         Log.i(TAG, "head tracking ${hd.getOrNull() ?: hd.exceptionOrNull()?.message}")
         onDispose {
+            com.vrgames.clockshop.platform.AppExit.stageAlive = false
             runCatching { head.stop() }
             subscription[0]?.cancel()
             Game.closeWindow(CLUES_ID)
@@ -154,10 +157,12 @@ fun ShopStage() {
         view?.let { v -> synchronized(Game.lock) { v.showHands(c, t / 60, t % 60) } }
     }
     LaunchedEffect(Game.noteVersion) {
-        val n = Game.note ?: return@LaunchedEffect
-        // Long enough to turn to it and read it; the next note replaces it anyway.
-        kotlinx.coroutines.delay(if (n.length > 40) 25000 else 16000)
-        if (Game.note == n) Game.note = null
+        if (Game.note == null) return@LaunchedEffect
+        // v0.5.2 (device 2026-11-20: notes stayed too long): 10 s, the letter and a hint 15 s; restarted by every new
+        // note, which replaces it at once.
+        val ver = Game.noteVersion
+        kotlinx.coroutines.delay(Game.noteMs)
+        Game.noteGone(ver)
     }
     // Panels: one explanation at a time.
     LaunchedEffect(Game.phase, Game.menuOpen, Game.note, Game.tool, view) {
@@ -168,7 +173,8 @@ fun ShopStage() {
         // The clock and dial controls take the hud's place at the lower right, out of the way of the room.
         show(PANEL_HUD, playing && Game.tool == null)
         show(PANEL_TOOL, playing && Game.tool != null)
-        show(PANEL_NOTE, Game.note != null)
+        // v0.5.2: not under the open menu, nor over the opening and closing cards (they stand ahead, above the note).
+        show(PANEL_NOTE, playing && Game.note != null && !Game.menuOpen)
         show(PANEL_MENU, true)
         panels[PANEL_MENU]?.setPos(if (Game.menuOpen) MENU_OPEN_POS else MENU_POS)
     }
@@ -178,7 +184,17 @@ fun ShopStage() {
             "guide" -> if (Game.window != GUIDE_ID) toggleWindow(GUIDE_ID)
             "menu" -> Game.menuOpen = true
             "close" -> Game.window?.let { Game.closeWindow(it) }
+            // Debug: where the panels really stand (room frame) and whether they show, and the gaps from the seat.
+            "layout" -> {
+                Log.i(AutoPilot.TAG, com.vrgames.clockshop.core.PanelLayout.report())
+                val root = view?.root
+                for ((id, e) in panels) {
+                    val p = if (root != null) e.convertPositionTo(Vector3(0f, 0f, 0f), root) else null
+                    Log.i(AutoPilot.TAG, "panel $id at ${p?.let { "%.2f,%.2f,%.2f".format(it.x, it.y, it.z) }} shown=${e.enabled}")
+                }
+            }
         }
+        if (Game.debugOpen != "layout") Log.i(AutoPilot.TAG, "opened ${Game.debugOpen} window=${Game.window} menu=${Game.menuOpen}")
         Game.debugOpen = null
     }
 
@@ -188,6 +204,9 @@ fun ShopStage() {
             .pointerInput(0) {
                 detectSpatialTapGesture(context, TargetEntity.any()) { value ->
                     val id = view?.hitOf(value.targetEntity) ?: return@detectSpatialTapGesture
+                    // v0.5: these open by a pull; a still pinch says so.
+                    if (id in PULL_TO_OPEN && Game.phase == Game.Phase.PLAYING) { main.post { Game.say(PULL_HINT[id] ?: "捏住它拉一下。") }; return@detectSpatialTapGesture }
+                    if (id.startsWith("tray:") && Game.phase == Game.Phase.PLAYING) { main.post { pinch(id); Game.say("也可以直接捏住托盘里的东西，拖到要用的地方再松手。") }; return@detectSpatialTapGesture }
                     main.post { pinch(id) }
                 }
             }
@@ -229,13 +248,38 @@ fun ShopStage() {
                                 lastTap[1] = now
                                 Game.tool = toolOfDial(d)
                             }
+                        } else if (id.startsWith("tray:")) {
+                            // v0.5 (PICO 1118: 「点击交互对于沉浸感的破坏」): an item is picked up from the tray and carried to
+                            // where it is used, let go there.
+                            carrying[0] = id.removePrefix("tray:")
+                            carryAt[0] = v.spotOf(id)
+                            v.carry(carryAt[0])
+                        } else if (id in PULL_TO_OPEN) {
+                            // v0.5: drawers, lids, doors and the lever are pulled open (5 cm), not tapped.
+                            pulling[0] = id
+                            pulled[0] = 0.0
                         } else {
                             main.post { pinch(id) }
                         }
                     },
-                    onDragEnd = { main.post { endTurns(turning, dialing, lastTap) } },
-                    onDragCancel = { main.post { endTurns(turning, dialing, lastTap) } },
+                    onDragEnd = { main.post { endTurns(turning, dialing, lastTap) }; dropCarried(view, toggleWindow); pullLetGo() },
+                    onDragCancel = { main.post { endTurns(turning, dialing, lastTap) }; carrying[0] = null; view?.carry(null); pulling[0] = null },
                 ) { value ->
+                    // A carried item follows the hand (in the room's frame: the drag turned by the seat's facing), a little
+                    // farther than the hand moves so it reaches across the shop.
+                    if (carrying[0] != null) {
+                        val f = Math.toRadians(place.facing.toDouble())
+                        val dx = meters(value.dragAmount.x); val dy = -meters(value.dragAmount.y); val dz = meters(value.dragAmount.z)
+                        val rx = dx * cos(f) - dz * sin(f); val rz = dx * sin(f) + dz * cos(f)
+                        carryAt[0] = carryAt[0]?.let { com.vrgames.clockshop.core.Vec3(it.x + rx * CARRY_GAIN, it.y + dy * CARRY_GAIN, it.z + rz * CARRY_GAIN) }
+                        view?.carry(carryAt[0])
+                        return@detectSpatialDragGesture
+                    }
+                    pulling[0]?.let { pid ->
+                        pulled[0] += kotlin.math.sqrt(meters(value.dragAmount.x).let { it * it } + meters(value.dragAmount.y).let { it * it } + meters(value.dragAmount.z).let { it * it })
+                        if (pulled[0] >= PULL_M) { pulling[0] = null; Log.i(INPUT_TAG, "pulled open $pid"); main.post { pinch(pid) } }
+                        return@detectSpatialDragGesture
+                    }
                     // Compose y points down.
                     val raw = runCatching { value.inputDevicePose.rawRotation.toQuaternion() }.getOrNull()
                     if (dialing.active) {
@@ -267,7 +311,7 @@ fun ShopStage() {
             AttachmentPanel(PANEL_RESULT) { ResultPanel(converter) }
             AttachmentPanel(PANEL_NOTE) { NotePanel(converter) }
             AttachmentPanel(PANEL_MENU) {
-                MenuPanel(converter, toggleWindow, faceMe = { Game.faceRequest++ }, quit = { context.findActivity()?.finishAndRemoveTask() }, version = appVersion)
+                MenuPanel(converter, toggleWindow, faceMe = { Game.faceRequest++ }, quit = { com.vrgames.clockshop.platform.AppExit.finishAll(context) }, version = appVersion)
             }
         },
         update = { _, attachments -> view?.let { attach(it, attachments, panels) } },
@@ -305,6 +349,16 @@ fun ShopStage() {
             AutoPilot.ready()
             var tick = 0.0
             subscription[0] = content.subscribe(SceneEvents.Update::class.java) { e ->
+                // Debug: carry an item to a thing ("ITEM,thing"), or pull a thing open, as the hands would.
+                Game.debugCarry?.let { dc ->
+                    Game.debugCarry = null
+                    val (item, target) = dc.split(",").let { it[0] to it.getOrElse(1) { "" } }
+                    val v = view
+                    if (item == "pull") { Log.i(INPUT_TAG, "pulled open $target"); main.post { pinch(target) } }
+                    // A pull let go after 2 cm, short of the 5 that open it.
+                    else if (item == "short") { pulling[0] = target; pulled[0] = 0.02; pullLetGo() }
+                    else if (v != null) { carrying[0] = item; carryAt[0] = v.spotOf(target)?.let { com.vrgames.clockshop.core.Vec3(it.x + 0.12, it.y, it.z) }; dropCarried(v, toggleWindow) }
+                }
                 val dt = e.deltaTime.toDouble().coerceIn(0.0, 0.1)
                 val pose = runCatching { if (head.state == DataProvider.State.STARTED) head.latestData?.hmdPose else null }.getOrNull()
                 place.frame(pose?.position, pose?.rotation, dt)
@@ -331,6 +385,52 @@ fun ShopStage() {
     )
 }
 
+/** v0.5: things pulled open rather than tapped (a still pinch on them says to pull). */
+private val PULL_TO_OPEN = setOf("drawer", "chest", "cabinet", "toolbox", "lever", "mantel")
+private const val PULL_M = 0.05
+private val PULL_HINT = mapOf(
+    "drawer" to "抽屉要拉：捏住它，往自己这边一拉。", "chest" to "箱盖要掀：捏住它，往上一掀。", "cabinet" to "柜门要拉：捏住它，往旁边一拨。",
+    "toolbox" to "工具箱要掀：捏住盖子，往上一掀。", "lever" to "拉杆要拉：捏住它，往下一拉。", "mantel" to "壁炉钟要转：捏住它，往旁边一拨。",
+)
+/** A carried item moves this much farther than the hand. */
+private const val CARRY_GAIN = 2.2
+private val carrying = arrayOfNulls<String>(1)
+private val carryAt = arrayOfNulls<com.vrgames.clockshop.core.Vec3>(1)
+private val pulling = arrayOfNulls<String>(1)
+private val pulled = doubleArrayOf(0.0)
+
+/**
+ * A pull let go. v0.5.2 (device 2026-11-20): one let go short of [PULL_M] opened nothing and said nothing, so the old
+ * note stayed; now it says how to pull this thing.
+ */
+private fun pullLetGo() {
+    val pid = pulling[0] ?: return
+    pulling[0] = null
+    Log.i(INPUT_TAG, "pull too short $pid ${"%.3f".format(pulled[0])} m")
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        if (Game.phase == Game.Phase.PLAYING) Game.say(PULL_HINT[pid] ?: "捏住它拉一下。")
+    }
+}
+
+/** The carried item let go: used on the thing nearest where it is (within 30 cm), or back to the tray. */
+private fun dropCarried(v: com.vrgames.clockshop.render.RoomView?, toggle: (String) -> Unit) {
+    val item = carrying[0] ?: return
+    val at = carryAt[0]
+    carrying[0] = null
+    v?.carry(null)
+    if (v == null || at == null) return
+    val target = v.allSpots().filter { !it.first.startsWith("tray:") && !it.first.startsWith("take:") }
+        .map { it.first to it.second.distanceTo(at) }.filter { it.second < 0.3 }.minByOrNull { it.second }?.first
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        if (target == null) { Game.say("放回托盘了。拿着它拖到要用的地方再松手。"); return@post }
+        Log.i(INPUT_TAG, "carried $item to $target")
+        Game.selected = runCatching { Shop.Item.valueOf(item) }.getOrNull()
+        onThing(target, toggle)
+        Game.selected = null
+        Game.changed()
+    }
+}
+
 /** What a pinch on thing [id] does (main thread). */
 private fun onThing(id: String, toggle: (String) -> Unit) {
     val s = Game.shop
@@ -353,7 +453,7 @@ private fun onThing(id: String, toggle: (String) -> Unit) {
         }
         id == "letter" -> {
             Game.sound?.play(Sfx.PAPER)
-            Game.say(Shop.LETTER)
+            Game.say(Shop.LETTER, com.vrgames.clockshop.core.Notes.FIRST_NOTE_MS)
         }
         id == "safe" -> {
             if ("safe" in s.opened) return
@@ -430,7 +530,7 @@ private val TEXTURES = listOf("photo1", "photo2", "photo3", "photo4", "photo5", 
 /** Props loaded if present (Seed3D + prep_ai), else simple stand-ins. */
 private val MODELS = listOf("grandfather", "wallclock", "mantel", "musicbox", "gramophone", "pocketwatch", "astro", "desklamp", "safe",
     "shell_front", "shell_workshop", "shell_attic", "shell_cellar", "shell_tower", "shell_study",
-    "tower_movement", "calendar_clock", "writing_desk", "cabinet", "wheel_big", "wheel_small", "plate_disc", "panel_card", "panel_tool", "panel_result", "panel_note", "panel_hud")
+    "tower_movement", "calendar_clock", "counter", "drawer", "trunk", "chest_body", "chest_lid", "trapdoor", "door", "bench", "frame", "writing_desk", "cabinet", "wheel_big", "wheel_small", "plate_disc", "panel_card", "panel_tool", "panel_result", "panel_note", "panel_hud")
 private val PANEL_FRAMES = mapOf(PANEL_CARD to "panel_card", PANEL_TOOL to "panel_tool", PANEL_RESULT to "panel_result", PANEL_NOTE to "panel_note", PANEL_HUD to "panel_hud")
 
 /** The menu tab low at the left of the tray, and where the unfolded menu stands (tray frame). */
@@ -455,9 +555,17 @@ private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<Strin
     // controls, low at the right of the tray; notes low at the left, above the menu tab.
     put(PANEL_CARD, Vector3(0f, 1.2f, -0.85f), 0f)
     put(PANEL_RESULT, Vector3(0f, 1.2f, -0.85f), 0f)
-    put(PANEL_HUD, Vector3(0.42f, 0.9f, -0.5f), -22f, -32f)
-    put(PANEL_TOOL, Vector3(0.4f, 0.93f, -0.5f), -22f, -32f)
-    put(PANEL_NOTE, Vector3(-0.4f, 1.0f, -0.52f), -16f, 32f)
+    // v0.5.1 (device 2026-11-19): the notes (letters, hints, what just happened) come straight ahead, a little under the
+    // eyes, so nothing has to be read off to the side; the hud and the clock controls moved 8 cm further right so the
+    // two never touch (about 10 degrees apart from the seat).
+    // v0.5.2 (device 2026-11-20: the note and the clock/dial panel overlapped by about 1.6 degrees): from core.PanelLayout,
+    // where the tests check they stay at least 4 degrees apart from the seat. The note is 0.44 m wide (its frame rebuilt
+    // with tools/panel3d/build_panel.py) and 5 cm left; the clock/dial panel 3 cm further right.
+    fun putAt(id: String, p: com.vrgames.clockshop.core.PanelLayout.Placed) =
+        put(id, Vector3(p.at.x.toFloat(), p.at.y.toFloat(), p.at.z.toFloat()), p.pitch.toFloat(), p.yaw.toFloat())
+    putAt(PANEL_HUD, com.vrgames.clockshop.core.PanelLayout.HUD)
+    putAt(PANEL_TOOL, com.vrgames.clockshop.core.PanelLayout.TOOL)
+    putAt(PANEL_NOTE, com.vrgames.clockshop.core.PanelLayout.NOTE)
     put(PANEL_MENU, MENU_POS, -30f, 30f)
 }
 
@@ -477,6 +585,9 @@ private class Seat {
     private var trayTarget = 0f
     private var seatAt = Vector3(0f, 0f, 0f)
     private var viewed = false
+    private val eyes = com.vrgames.clockshop.core.EyeHeight()
+    /** The room's floor in the scene's frame: the measured eye height less a seated eye. */
+    private var floorY = 0f
 
     fun again() {
         placed = false
@@ -495,7 +606,14 @@ private class Seat {
             }
             else -> null
         }
-        if (!placed && rot != null && eye != null) {
+        // v0.5.1: the room's floor from the measured eyes (core.EyeHeight), so a room origin that is not the floor
+        // (seen on a first install of 引力弹弓) cannot sink or lift the shop. Set once, corrected once at most.
+        if (eyes.feed(eye?.x, eye?.y, eye?.z, dt)) {
+            floorY = eyes.value!! - SEATED_EYE
+            Log.i(TAG, "eyes at ${eyes.value} (${if (eyes.guessed) "fallback" else "measured"}): floor at $floorY")
+            if (placed) root?.let { it.setPos(Vector3(seatAt.x, floorY, seatAt.z)) }
+        }
+        if (!placed && rot != null && eye != null && com.vrgames.clockshop.core.EyeHeight.valid(eye.x, eye.y, eye.z)) {
             val f = rot.rotateVector(Vector3(0f, 0f, -1f))
             if (hypot(f.x, f.z) >= 0.2f) {
                 if (headings.isEmpty()) since = clock
@@ -509,7 +627,7 @@ private class Seat {
                     trayTarget = 0f
                     seatAt = Vector3(eye.x, 0f, eye.z)
                     root?.let {
-                        it.setPos(seatAt)
+                        it.setPos(Vector3(seatAt.x, floorY, seatAt.z))
                         it.transform().eulerAngles = EulerAngles(0f, facing, 0f)
                     }
                     Log.i(TAG, "facing: ${headings.size} samples, mean $facing, eye $eye")
@@ -522,7 +640,7 @@ private class Seat {
             val turn = view?.getOrNull(0) ?: 0f
             val lift = view?.getOrNull(1) ?: 0f
             root?.let {
-                it.setPos(Vector3(seatAt.x, lift, seatAt.z))
+                it.setPos(Vector3(seatAt.x, floorY + lift, seatAt.z))
                 it.transform().eulerAngles = EulerAngles(0f, facing + turn, 0f)
             }
             viewed = view != null
@@ -676,5 +794,8 @@ private fun android.content.Context.findActivity(): android.app.Activity? {
 }
 
 private const val TAG = "ClockStage"
+
+/** A seated eye over the floor: the shop was built for it (panels at 0.9–1.2 m, the counter, the tray). */
+private const val SEATED_EYE = 1.2f
 /** Every pinch the stage sees (kept in release builds, for on-device reports). */
 private const val INPUT_TAG = "ClockInput"

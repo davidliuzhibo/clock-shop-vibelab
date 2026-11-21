@@ -21,7 +21,9 @@ import com.vrgames.clockshop.core.Walkthrough
  * move) · act --es id "open mantel" · tap --es id "clock:big" (as if pinched) · tool --es id clock:big|safe|rings|none ·
  * look --es id "yaw,pitch" (degrees; "reset" gives the head back) · view --es id "turn,lift" (turns and lifts
  * the room for the emulator's fixed camera; "reset") · open --es id clues|guide|menu|close ·
- * start · hint · face · reset · stop
+ * start · hint · face · reset · stop · state (also the note shown) · layout (v0.5.2: where the panels stand, the gaps
+ * between the note and the panels at the right, from the seat) · shortpull --es id drawer (v0.5.2: a pull let go short
+ * of 5 cm: the note says how to pull it)
  */
 object AutoPilot {
     const val ACTION = "com.vrgames.clockshop.TEST"
@@ -35,7 +37,11 @@ object AutoPilot {
     fun register(context: Context) {
         if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         val receiver = object : BroadcastReceiver() {
-            override fun onReceive(c: Context, i: Intent) = command(i.getStringExtra("cmd") ?: "", i.getStringExtra("id"))
+            override fun onReceive(c: Context, i: Intent) {
+                // 2026-11-19: the menu's 退出, for the emulator test (every window of the app should go).
+                if (i.getStringExtra("cmd") == "quit") { android.util.Log.i(TAG, "cmd quit"); com.vrgames.clockshop.platform.AppExit.finishAll(c) }
+                else command(i.getStringExtra("cmd") ?: "", i.getStringExtra("id"))
+            }
         }
         ContextCompat.registerReceiver(context.applicationContext, receiver, IntentFilter(ACTION), ContextCompat.RECEIVER_EXPORTED)
         Log.i(TAG, "ready")
@@ -59,6 +65,10 @@ object AutoPilot {
                 step()
             }
             "act" -> Game.act(id ?: return)
+            "carry" -> Game.debugCarry = id
+            "state" -> Log.i(TAG, "state room=${Game.shop.room} tray=${Game.shop.tray} opened=${Game.shop.opened} phase=${Game.phase} tool=${Game.tool} menu=${Game.menuOpen} note=${Game.note}")
+            "layout" -> Game.debugOpen = "layout"
+            "shortpull" -> Game.debugCarry = "short,${id ?: "drawer"}"
             "tap" -> tap(id ?: return)
             "tool" -> Game.tool = id?.takeIf { it != "none" }
             "look" -> Game.debugLook = id?.split(",")?.mapNotNull { it.trim().toDoubleOrNull() }?.takeIf { it.size == 2 }?.let { it[0] to it[1] }

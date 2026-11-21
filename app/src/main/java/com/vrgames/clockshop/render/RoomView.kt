@@ -104,6 +104,21 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
     private fun box(size: Vector3, at: Vector3, m: Material, parent: Entity = roomRoot) =
         model(MeshResource.createBox(size, 0.005f), m).also { it.setPos(at); parent.addChild(it) }
 
+    /**
+     * v0.5 (PICO 1118: 「一些模型比较简单，和周围不符」): a generated model (Seed3D, prepared 1 m tall) fitted to a box
+     * [w] x [h] x [d] metres, standing on its origin; [yaw] 90 for one generated side-on. The counter, drawer, trunk,
+     * chests, trapdoor, doors, bench and frames used to be plain boxes.
+     */
+    private fun fitted(name: String, w: Float, h: Float, d: Float, yaw: Float = 0f): Entity? {
+        val ex = EXTENTS[name] ?: return null
+        val m = models[name]?.clone(Entity.CloneOptions(true, true)) ?: return null
+        val side = yaw == 90f || yaw == -90f
+        val ew = if (side) ex.z else ex.x
+        val ed = if (side) ex.x else ex.z
+        m.transform().eulerAngles = EulerAngles(0f, yaw, 0f)
+        return Entity().apply { addChild(m); transform().setScaleVector(Vector3(w / ew, h / ex.y, d / ed)) }
+    }
+
     private fun piece(name: String, height: Float): Entity? = models[name]?.clone(Entity.CloneOptions(true, true))?.also {
         it.setPos(Vector3(0f, 0f, 0f))
         it.setScale(height)
@@ -129,6 +144,16 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             cur = cur.getParent()
         }
         return null
+    }
+
+    /** v0.5: every pinchable thing and where it stands (room frame): where a carried item is let go. */
+    fun allSpots(): List<Pair<String, Vec3>> = parts.keys.mapNotNull { id -> if (parts[id]?.enabled == false) null else spotOf(id)?.let { id to it } }
+
+    /** v0.5: the item being carried from the tray, a gold glow following the hand (null: none). */
+    private val carryMark = model(MeshResource.createSphere(1f), glow(color(1f, 0.85f, 0.4f, 0.85f))).apply { enabled = false; setScale(0.03f) }.also { root.addChild(it) }
+    fun carry(at: Vec3?) {
+        carryMark.enabled = at != null
+        at?.let { carryMark.setPos(Vector3(it.x.toFloat(), it.y.toFloat(), it.z.toFloat())) }
     }
 
     /** Where thing [id] stands (room frame), for sounds, sparkles and the panels. */
@@ -266,8 +291,10 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         (piece("grandfather", 2.1f) ?: box(Vector3(0.6f, 2.1f, 0.4f), Vector3(0f, 1.05f, 0f), woodDark)).also { it.setPos(Vector3(0f, 0f, -2.6f)); roomRoot.addChild(it) }
         clockFace("big", Vector3(0f, 1.62f, -2.36f), 0.2f)
         // The counter to the right front, the mantel clock on it, the drawer facing the player.
-        box(Vector3(1.6f, 1.0f, 0.5f), Vector3(0.75f, 0.5f, -1.45f), woodMid)
-        box(Vector3(1.66f, 0.04f, 0.56f), Vector3(0.75f, 1.02f, -1.45f), woodDark)
+        fitted("counter", 1.66f, 1.04f, 0.56f)?.apply { setPos(Vector3(0.75f, 0f, -1.45f)); roomRoot.addChild(this) } ?: run {
+            box(Vector3(1.6f, 1.0f, 0.5f), Vector3(0.75f, 0.5f, -1.45f), woodMid)
+            box(Vector3(1.66f, 0.04f, 0.56f), Vector3(0.75f, 1.02f, -1.45f), woodDark)
+        }
         // Worn into the counter by years of turning: a faint ring under the mantel clock, which stands a little askew.
         roomRoot.addChild(model(MeshResource.createTorus(0.215f, 0.205f), pbr(color(0.13f, 0.08f, 0.04f), roughness = 0.9f)).apply {
             setPos(Vector3(1.15f, 1.042f, -1.5f))
@@ -282,8 +309,12 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         parts["mantelDoor"] = back
         roomRoot.addChild(mantel)
         hit(mantel, "mantel", Vector3(0.42f, 0.48f, 0.32f), Vector3(0f, 0.22f, 0f))
-        val drawer = box(Vector3(0.5f, 0.15f, 0.06f), Vector3(0.6f, 0.8f, -1.18f), woodDark)
-        drawer.addChild(model(sphere, brass).apply { setScale(0.02f); setPos(Vector3(0f, 0f, 0.04f)) })
+        // The drawer: a real drawer box, its front 2 cm proud of the counter, the rest inside it until pulled out.
+        val drawer = fitted("drawer", 0.5f, 0.15f, 0.36f)?.let { d ->
+            Entity().apply { setPos(Vector3(0.6f, 0.8f, -1.18f)); d.setPos(Vector3(0f, -0.075f, -0.15f)); addChild(d); roomRoot.addChild(this) }
+        } ?: box(Vector3(0.5f, 0.15f, 0.06f), Vector3(0.6f, 0.8f, -1.18f), woodDark).also {
+            it.addChild(model(sphere, brass).apply { setScale(0.02f); setPos(Vector3(0f, 0f, 0.04f)) })
+        }
         hit(drawer, "drawer", Vector3(0.55f, 0.2f, 0.12f))
         item(Item.KEY_DRAWER, Vector3(0.85f, 1.06f, -1.38f))
         // The master's letter, lying on the counter.
@@ -291,7 +322,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         letter.transform().eulerAngles = EulerAngles(0f, 12f, 0f)
         hit(letter, "letter", Vector3(0.26f, 0.06f, 0.32f))
         // The display case to the left, its glass where the afternoon sun writes.
-        box(Vector3(1.0f, 0.9f, 0.5f), Vector3(-1.4f, 0.45f, -1.6f), woodMid)
+        fitted("counter", 1.0f, 0.9f, 0.5f)?.apply { setPos(Vector3(-1.4f, 0f, -1.6f)); roomRoot.addChild(this) }
+            ?: box(Vector3(1.0f, 0.9f, 0.5f), Vector3(-1.4f, 0.45f, -1.6f), woodMid)
         parts["case"] = box(Vector3(1.0f, 0.5f, 0.5f), Vector3(-1.4f, 1.15f, -1.6f), glass)
         for (k in 0 until 3) (piece("pocketwatch", 0.12f) ?: model(sphere, brass).apply { setScale(0.04f) }).apply {
             setPos(Vector3(-1.7f + k * 0.3f, 0.92f, -1.6f)); roomRoot.addChild(this)
@@ -313,8 +345,10 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
     }
 
     private fun buildWorkshop() {
-        box(Vector3(2.0f, 0.9f, 0.8f), Vector3(0f, 0.45f, -1.25f), woodMid)
-        box(Vector3(2.06f, 0.04f, 0.86f), Vector3(0f, 0.92f, -1.25f), woodDark)
+        fitted("bench", 2.06f, 0.94f, 0.86f)?.apply { setPos(Vector3(0f, 0f, -1.25f)); roomRoot.addChild(this) } ?: run {
+            box(Vector3(2.0f, 0.9f, 0.8f), Vector3(0f, 0.45f, -1.25f), woodMid)
+            box(Vector3(2.06f, 0.04f, 0.86f), Vector3(0f, 0.92f, -1.25f), woodDark)
+        }
         // The music box in the middle of the bench, with three gear seats above it (big at the bottom).
         val mb = Entity().apply { setPos(Vector3(0f, 0.94f, -1.25f)) }
         mb.addChild(piece("musicbox", 0.22f) ?: box(Vector3(0.3f, 0.15f, 0.2f), Vector3(0f, 0.075f, 0f), woodDark, mb))
@@ -379,13 +413,16 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         // Five empty frames on the wall ahead; the photos lie on the trunk to the right.
         for (i in 0..4) {
             val f = Entity().apply { setPos(Vector3(-1.2f + i * 0.6f, 1.5f, -2.92f)) }
-            f.addChild(model(MeshResource.createBox(Vector3(0.44f, 0.56f, 0.04f), 0.006f), woodDark))
-            f.addChild(model(MeshResource.createBox(Vector3(0.37f, 0.49f, 0.01f), 0f), pbr(color(0.85f, 0.82f, 0.75f))).apply { setPos(Vector3(0f, 0f, 0.02f)) })
+            fitted("frame", 0.44f, 0.56f, 0.04f)?.let { m -> m.setPos(Vector3(0f, -0.28f, 0f)); f.addChild(m) } ?: run {
+                f.addChild(model(MeshResource.createBox(Vector3(0.44f, 0.56f, 0.04f), 0.006f), woodDark))
+                f.addChild(model(MeshResource.createBox(Vector3(0.37f, 0.49f, 0.01f), 0f), pbr(color(0.85f, 0.82f, 0.75f))).apply { setPos(Vector3(0f, 0f, 0.02f)) })
+            }
             f.addChild(model(MeshResource.createBox(Vector3(0.44f, 0.56f, 0.01f), 0f), slotMat).apply { setName("glow"); setPos(Vector3(0f, 0f, -0.02f)); setScale(1.08f) })
             roomRoot.addChild(f)
             hit(f, "frame$i", Vector3(0.48f, 0.6f, 0.12f))
         }
-        box(Vector3(0.9f, 0.45f, 0.5f), Vector3(1.25f, 0.225f, -1.1f), woodMid)
+        fitted("trunk", 0.9f, 0.45f, 0.5f, yaw = -90f)?.apply { setPos(Vector3(1.25f, 0f, -1.1f)); roomRoot.addChild(this) }
+            ?: box(Vector3(0.9f, 0.45f, 0.5f), Vector3(1.25f, 0.225f, -1.1f), woodMid)
         Shop.PHOTO_ORDER.forEachIndexed { k, p ->
             // Shuffled on the trunk, so the order is the player's to find.
             val slot = listOf(3, 0, 4, 1, 2)[k]
@@ -404,13 +441,25 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         clockFace("attic", Vector3(-2.6f, 1.9f, -1.0f), 0.2f, yaw = 90f)
         roomRoot.addChild(plate("mark_star", 0.07f).apply { setPos(Vector3(-2.64f, 1.54f, -1.0f)); transform().eulerAngles = EulerAngles(0f, 90f, 0f) })
         // The chest that is only there on that afternoon.
-        val chest = box(Vector3(0.6f, 0.4f, 0.4f), Vector3(-1.2f, 0.2f, -1.5f), pbr(color(0.45f, 0.28f, 0.16f)))
-        chest.addChild(model(MeshResource.createBox(Vector3(0.62f, 0.06f, 0.42f), 0.01f), pbr(color(0.35f, 0.2f, 0.1f))).apply { setName("lid"); setPos(Vector3(0f, 0.22f, 0f)) })
+        val closedChest = fitted("chest_lid", 0.6f, 0.45f, 0.4f)
+        val openChest = fitted("chest_body", 0.62f, 0.4f, 0.42f)
+        val chest = if (closedChest != null && openChest != null) Entity().apply {
+            // Closed: the banded chest with its domed lid; opened: the chest with no lid, empty, the key above it.
+            setPos(Vector3(-1.2f, 0.2f, -1.5f))
+            closedChest.setName("closed"); closedChest.setPos(Vector3(0f, -0.2f, 0f)); addChild(closedChest)
+            openChest.setName("opened"); openChest.setPos(Vector3(0f, -0.2f, 0f)); openChest.enabled = false; addChild(openChest)
+            roomRoot.addChild(this)
+        } else box(Vector3(0.6f, 0.4f, 0.4f), Vector3(-1.2f, 0.2f, -1.5f), pbr(color(0.45f, 0.28f, 0.16f))).also {
+            it.addChild(model(MeshResource.createBox(Vector3(0.62f, 0.06f, 0.42f), 0.01f), pbr(color(0.35f, 0.2f, 0.1f))).apply { setName("lid"); setPos(Vector3(0f, 0.22f, 0f)) })
+        }
         hit(chest, "chest", Vector3(0.65f, 0.45f, 0.45f))
         item(Item.KEY_CELLAR, Vector3(-1.2f, 0.5f, -1.3f))
         // The trapdoor down to the cellar, on the floor ahead.
-        val trap = box(Vector3(0.8f, 0.03f, 0.6f), Vector3(0.1f, 0.015f, -1.3f), woodDark)
-        trap.addChild(model(MeshResource.createTorus(0.05f, 0.04f), brass).apply { setPos(Vector3(0f, 0.02f, 0.2f)) })
+        val trap = fitted("trapdoor", 0.8f, 0.04f, 0.6f)?.let { m ->
+            Entity().apply { setPos(Vector3(0.1f, 0.015f, -1.3f)); m.setPos(Vector3(0f, -0.015f, 0f)); addChild(m); roomRoot.addChild(this) }
+        } ?: box(Vector3(0.8f, 0.03f, 0.6f), Vector3(0.1f, 0.015f, -1.3f), woodDark).also {
+            it.addChild(model(MeshResource.createTorus(0.05f, 0.04f), brass).apply { setPos(Vector3(0f, 0.02f, 0.2f)) })
+        }
         trap.addChild(model(MeshResource.createBox(Vector3(0.86f, 0.01f, 0.66f), 0f), slotMat).apply { setName("glow"); setPos(Vector3(0f, -0.005f, 0f)) })
         hit(trap, "cellar", Vector3(0.85f, 0.1f, 0.65f))
     }
@@ -559,9 +608,11 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
 
     private fun door(id: String, at: Vector3, yaw: Float) {
         val d = Entity().apply { setPos(at); transform().eulerAngles = EulerAngles(0f, yaw, 0f) }
-        d.addChild(model(MeshResource.createBox(Vector3(0.9f, 2.1f, 0.06f), 0.01f), woodDark))
-        for (y in listOf(-0.5f, 0.45f)) d.addChild(model(MeshResource.createBox(Vector3(0.7f, 0.75f, 0.02f), 0.01f), woodMid).apply { setPos(Vector3(0f, y, 0.035f)) })
-        d.addChild(model(sphere, brass).apply { setScale(0.035f); setPos(Vector3(0.32f, 0f, 0.06f)) })
+        fitted("door", 0.9f, 2.1f, 0.08f)?.let { m -> m.setPos(Vector3(0f, -1.05f, 0f)); d.addChild(m) } ?: run {
+            d.addChild(model(MeshResource.createBox(Vector3(0.9f, 2.1f, 0.06f), 0.01f), woodDark))
+            for (y in listOf(-0.5f, 0.45f)) d.addChild(model(MeshResource.createBox(Vector3(0.7f, 0.75f, 0.02f), 0.01f), woodMid).apply { setPos(Vector3(0f, y, 0.035f)) })
+            d.addChild(model(sphere, brass).apply { setScale(0.035f); setPos(Vector3(0.32f, 0f, 0.06f)) })
+        }
         d.addChild(model(MeshResource.createBox(Vector3(1.0f, 2.2f, 0.02f), 0f), slotMat).apply { setName("glow"); setPos(Vector3(0f, 0f, -0.02f)); enabled = false })
         roomRoot.addChild(d)
         hit(d, id, Vector3(1f, 2.2f, 0.2f))
@@ -686,6 +737,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             Room.ATTIC -> {
                 parts["chest"]?.let { c ->
                     c.enabled = s.thatDay || "chest" in s.opened
+                    c.getChildren().firstOrNull { it.getName() == "closed" }?.enabled = "chest" !in s.opened
+                    c.getChildren().firstOrNull { it.getName() == "opened" }?.enabled = "chest" in s.opened
                     c.getChildren().firstOrNull { it.getName() == "lid" }?.let { lid ->
                         val open = "chest" in s.opened
                         lid.setPos(Vector3(0f, if (open) 0.3f else 0.22f, if (open) -0.22f else 0f))
@@ -830,6 +883,12 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
     } ?: Vec3(0.0, 1.5, -2.0)
 
     companion object {
+        /** The generated models' size at 1 m tall (width, height, depth; tools/blender/prep_ai.py's log). */
+        val EXTENTS = mapOf(
+            "counter" to Vector3(1.994f, 1f, 0.896f), "drawer" to Vector3(2.173f, 1f, 2.077f), "trunk" to Vector3(2.056f, 1f, 2.901f),
+            "chest_body" to Vector3(1.988f, 1f, 1.527f), "chest_lid" to Vector3(1.176f, 1f, 1.047f), "trapdoor" to Vector3(9.232f, 1f, 8.844f),
+            "door" to Vector3(0.422f, 1f, 0.108f), "bench" to Vector3(1.854f, 1f, 0.908f), "frame" to Vector3(0.703f, 1f, 0.046f),
+        )
         const val MIN_HIT = 0.14f
         const val MANTEL_ASKEW = 32f
         const val TRAY_Y = 0.86f

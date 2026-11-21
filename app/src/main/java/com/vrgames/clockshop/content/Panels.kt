@@ -51,6 +51,12 @@ val Dim = Color(0xFF6B5A47)
 val Jade = Color(0xFF1F5B3A)
 val Clay = Color(0xFFA33A17)
 private val PanelBg = Color(0xFFEFE3C8)
+/** Buttons (v0.5.1): light text on dark fills, so they read on the cream paper and in the dim room. */
+val Gold = Color(0xFFF2C76A)
+private val PillBg = Color(0xFF3B2416)
+private val PillText = Color(0xFFF6E7C8)
+private val CtaBg = Color(0xFF8E2A12)
+private val CtaText = Color(0xFFFFF0C8)
 /** Window backdrop: the system glass can be light, and every text color here is meant for dark. */
 val WindowBg = Color(0xFFEFE3C8)
 
@@ -83,21 +89,45 @@ fun CallToAction(c: PhysicalLengthConverter, text: String, onClick: () -> Unit) 
     val shape = RoundedCornerShape(c.m(0.012f))
     Text(
         text,
-        Modifier.clip(shape).background(Brass).border(c.m(0.002f), Color(0xFFFFF1C9), shape)
+        // v0.5.1 (device 2026-11-19: dark text on dark buttons was hard to read): vermilion lacquer, light gold text.
+        Modifier.clip(shape).background(CtaBg).border(c.m(0.0022f), Gold, shape)
             .clickable { onClick() }.padding(horizontal = c.m(0.018f), vertical = c.m(0.01f)),
         fontSize = c.sz(0.02f),
-        color = Color(0xFF1B1408),
+        color = CtaText,
     )
 }
 
+/**
+ * An ordinary button. v0.5.1 (device 2026-11-19): it had no fill and dark text, so in the dim shop it read as plain
+ * text or vanished; now dark walnut with light text and a brass rim, readable on the cream letters and in the room alike.
+ * [color] marks an important one (gold rim and text) or a risky one (clay).
+ */
 @Composable
 fun Pill(c: PhysicalLengthConverter, text: String, color: Color = Dim, onClick: () -> Unit) {
     val shape = RoundedCornerShape(c.m(0.01f))
+    val accent = when (color) { Brass -> Gold; Clay -> Color(0xFFFFB08A); else -> PillText }
     Text(
         text,
-        Modifier.clip(shape).border(c.m(0.0015f), color, shape).clickable { onClick() }.padding(horizontal = c.m(0.011f), vertical = c.m(0.007f)),
+        Modifier.clip(shape).background(PillBg).border(c.m(0.0016f), if (color == Clay) Color(0xFFE07A4F) else Gold, shape)
+            .clickable { onClick() }.padding(horizontal = c.m(0.012f), vertical = c.m(0.0075f)),
         fontSize = c.sz(0.015f),
-        color = color,
+        color = accent,
+    )
+}
+
+/**
+ * The folded menu, alone in the room: v0.5.1 (device 2026-11-19: "菜单" was dim on a see-through button in a dark room),
+ * a large vermilion tab with light text and a gold rim, as in 绣娘 and 年画坊.
+ */
+@Composable
+fun MenuTab(c: PhysicalLengthConverter, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(c.m(0.012f))
+    Text(
+        "≡  菜单",
+        Modifier.clip(shape).background(Color(0xFFB3361A)).border(c.m(0.0025f), Gold, shape)
+            .clickable { onClick() }.padding(horizontal = c.m(0.02f), vertical = c.m(0.011f)),
+        fontSize = c.sz(0.022f),
+        color = Color(0xFFFFF4D6),
     )
 }
 
@@ -109,7 +139,8 @@ fun CardPanel(c: PhysicalLengthConverter, resumed: Boolean) {
         Text("钟表店密室", fontSize = c.sz(0.032f), color = Brass)
         Text("老钟表匠走了，给你留下这间铺子和一封信：“铺子里藏着我一生最得意的作品。钟会带你回到我想让你看见的时刻。”", fontSize = c.sz(0.016f), color = LabelInk)
         Text("怎么玩", fontSize = c.sz(0.018f), color = Jade)
-        Text("· 看着东西，捏一下：拿起、打开、拨动。\n· 拿到的东西放在面前的托盘里：先捏一下托盘里的东西选中它，再捏要用它的地方。\n· 捏一下钟面，用按钮拨钟；房间会回到钟上的那个时刻。\n· 卡住了就点「提示」。四个房间，每间藏一枚怀表零件。", fontSize = c.sz(0.015f), color = LabelInk)
+        // v0.5.2 (device 2026-11-20): six rooms, not four; things are carried from the tray and clocks turned by hand.
+        Text("· 看着东西，捏一下：拿起、打开、拨动。\n· 拿到的东西在面前的托盘里，捏住拖到要用的地方再松手。\n· 捏住钟面绕圈拨钟，或像拧旋钮一样转手腕；房间会回到钟上的那个时刻。\n· 卡住了就点「提示」。一共六个房间，每间藏一枚怀表零件。", fontSize = c.sz(0.015f), color = LabelInk)
         CallToAction(c, if (resumed) "继续 →" else "推开店门 →") { Game.start() }
     }
 }
@@ -236,14 +267,15 @@ fun ResultPanel(c: PhysicalLengthConverter) {
 @Composable
 fun NotePanel(c: PhysicalLengthConverter) {
     val n = Game.note ?: return
-    Text(n, Modifier.width(c.m(0.5f)).height(c.m(0.13f)).padding(horizontal = c.m(0.014f), vertical = c.m(0.006f)), fontSize = c.sz(0.0165f), color = Brass)
+    // v0.5.2: 0.44 m (was 0.50), so it stays clear of the clock/dial panel at the right (core.PanelLayout).
+    Text(n, Modifier.width(c.m(com.vrgames.clockshop.core.PanelLayout.NOTE_W.toFloat())).height(c.m(com.vrgames.clockshop.core.PanelLayout.NOTE_H.toFloat())).padding(horizontal = c.m(0.014f), vertical = c.m(0.006f)), fontSize = c.sz(0.0165f), color = Brass)
 }
 
 @Composable
 fun MenuPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit, faceMe: () -> Unit, quit: () -> Unit, version: String) {
     @Suppress("UNUSED_VARIABLE") val v = Game.version
     if (!Game.menuOpen) {
-        Pill(c, "菜单", Brass) { Game.menuOpen = true }
+        MenuTab(c) { Game.menuOpen = true }
         return
     }
     PanelBox(c, 0.24f) {

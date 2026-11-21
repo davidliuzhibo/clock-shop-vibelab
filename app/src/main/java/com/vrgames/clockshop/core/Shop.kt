@@ -406,10 +406,10 @@ class Shop {
         val HINTS: Map<Room, List<Pair<(Shop) -> Boolean, String>>> = mapOf(
             Room.FRONT to listOf(
                 { s: Shop -> "mantelTurned" in s.opened } to "柜台右边的座钟有点不对劲，捏一下，把它转过来看看背面。",
-                { s: Shop -> s.sunlit || "mantel" in s.opened } to "座钟背面刻着“三”。把正前方的大钟拨到三点：捏一下钟面，用弹出的按钮拨。",
+                { s: Shop -> s.sunlit || "mantel" in s.opened } to "座钟背面刻着“三”。把正前方的大钟拨到三点：捏住钟面绕圈拨，或点「用滑动条拨」。",
                 { s: Shop -> "mantel" in s.opened } to "三点的阳光照进来了，座钟的后门也松了：捏一下座钟，打开它。",
                 { s: Shop -> Item.KEY_DRAWER in s.taken } to "座钟的后门开了，里面有一把钥匙，捏一下拿起来。",
-                { s: Shop -> 1 in s.parts } to "钥匙在手边的托盘里了：捏一下柜台的抽屉，就用钥匙打开它。",
+                { s: Shop -> 1 in s.parts } to "钥匙在手边的托盘里了：捏住柜台的抽屉往外一拉，就用钥匙打开它。",
             ),
             Room.WORKSHOP to listOf(
                 { s: Shop -> s.taken.containsAll(GEARS) || s.musicBoxBuilt } to "工作台上有两个齿轮，工具箱里还有一个：打开工具箱，把三个齿轮都拿起来。",
@@ -441,7 +441,7 @@ class Shop {
                 { s: Shop -> s.lampOn } to "屋里太暗。先捏书桌上的台灯。",
                 { s: Shop -> s.clues.any { it.startsWith("旧报纸") } } to "灯下有一张旧报纸，捏一下读它的日期。",
                 { s: Shop -> s.calendarRight } to "报纸的日期是 1936 年 3 月 12 日，星期四。捏墙边的万年历，把月、日、星期分别拨到 3、12、四。",
-                { s: Shop -> s.finished } to "万年历对上了：捏一下旁边的柜门。",
+                { s: Shop -> s.finished } to "万年历对上了：捏住旁边的柜门，往旁边一拨。",
             ),
         )
     }

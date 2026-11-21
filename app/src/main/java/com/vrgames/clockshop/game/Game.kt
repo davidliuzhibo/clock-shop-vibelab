@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.vrgames.clockshop.core.Notes
 import com.vrgames.clockshop.core.Shop
 import com.vrgames.clockshop.core.Walkthrough
 import com.vrgames.clockshop.render.Music
@@ -37,6 +38,8 @@ object Game {
     var resumed by mutableStateOf(false)
     var note by mutableStateOf<String?>(null)
     var noteVersion by mutableIntStateOf(0); private set
+    /** How long the current note stays (the stage clears it after this, unless a newer note replaced it). */
+    var noteMs = Notes.NOTE_MS; private set
     /** The clock or the dials whose panel is open ("clock:big", "safe", "rings"), or null. */
     var tool by mutableStateOf<String?>(null)
     /** The time shown while a clock's hands are being turned by hand ("clock:big" to "下午 3:05"), else null. */
@@ -89,13 +92,26 @@ object Game {
 
     fun start() {
         phase = Phase.PLAYING
-        if (moves.isEmpty()) say(Shop.LETTER)
+        if (moves.isEmpty()) say(Shop.LETTER, Notes.FIRST_NOTE_MS)
         version++
     }
 
-    fun say(text: String?) {
+    /**
+     * Shows [text] in the note in front for [ms] (v0.5.2: 10 s, the letter and a hint 15 s; it was 16-25 s and the
+     * next step's words did not come because many steps said nothing). A newer note always replaces it.
+     */
+    fun say(text: String?, ms: Long = Notes.NOTE_MS) {
         note = text
+        noteMs = ms
         noteVersion++
+        if (text != null) Log.i(TAG, "note ${ms}ms: $text")
+    }
+
+    /** The stage's timer ran out on note [version]. */
+    fun noteGone(version: Int) {
+        if (noteVersion != version || note == null) return
+        note = null
+        Log.i(TAG, "note gone")
     }
 
     fun changed() {
@@ -144,6 +160,8 @@ object Game {
                 is Shop.Event.PlateFound -> sound?.play(Sfx.PART)
             }
         }
+        // v0.5.2: a step that went through always says what happened (turning the mantel clock, taking, placing...).
+        if (said == null && !refused) said = Notes.fallback(m, out)
         if (s.room != roomBefore) {
             sound?.play(Sfx.DOOR)
             tool = null
@@ -214,12 +232,15 @@ object Game {
         if (d.startsWith("safe") && "safe" !in s.opened && s.dials["safe1"] == 3 && s.dials["safe2"] == 1 && s.dials["safe3"] == 5) act("open safe")
     }
 
+    /** Debug: "ITEM,thing" carried and let go there, or "pull,thing". */
+    @Volatile var debugCarry: String? = null
+
     fun hint() {
         val text = synchronized(lock) { shop.hint() }
         // Kept with the moves, so the count of hints comes back with the save.
         moves += "hint"
         save()
-        say("提示：$text")
+        say("提示：$text", Notes.HINT_NOTE_MS)
         version++
     }
 

@@ -30,9 +30,10 @@ import com.vrgames.clockshop.game.Game
 
 private val CardBg = Color(0x26F4EEE2)
 
-/** 线索簿: everything found so far, the pictures large, and the four parts. */
+/** 线索簿: everything found so far, the pictures large, and the six parts (one a room). */
 @Composable
 fun CluesWindow() {
+    com.vrgames.clockshop.platform.AppExit.CloseWithStage(CLUES_ID)
     @Suppress("UNUSED_VARIABLE") val v = Game.version
     val s = Game.shop
     val context = LocalContext.current
@@ -42,7 +43,7 @@ fun CluesWindow() {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         WindowHeader(CLUES_ID, "线索簿", 32.sp)
-        Text("怀表零件：" + (1..4).joinToString("　") { if (it in s.parts) "第 $it 枚 ●" else "第 $it 枚 ○" }, fontSize = 20.sp, color = LabelInk)
+        Text("怀表零件：" + (1..6).joinToString("　") { if (it in s.parts) "第 $it 枚 ●" else "第 $it 枚 ○" }, fontSize = 20.sp, color = LabelInk)
         Text("找到的线索", fontSize = 24.sp, color = Jade)
         for (clue in s.clues) {
             Text("· $clue", fontSize = 19.sp, color = LabelInk)
@@ -64,6 +65,7 @@ fun CluesWindow() {
 /** 钟表图鉴: a true short story for each kind of clock in the shop. */
 @Composable
 fun GuideWindow() {
+    com.vrgames.clockshop.platform.AppExit.CloseWithStage(GUIDE_ID)
     Column(
         Modifier.fillMaxSize().background(WindowBg).padding(28.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
