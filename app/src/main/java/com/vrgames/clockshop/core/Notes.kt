@@ -9,7 +9,8 @@ object Notes {
     /** The opening letter (and the letter on the counter), long enough to read twice. */
     const val FIRST_NOTE_MS = 15_000L
     /** Every other note. */
-    const val NOTE_MS = 10_000L
+    /** v0.6.0: 7 s (was 10), so a note is gone soon after it is read. */
+    const val NOTE_MS = 7_000L
     /** A hint the player asked for. */
     const val HINT_NOTE_MS = 15_000L
 

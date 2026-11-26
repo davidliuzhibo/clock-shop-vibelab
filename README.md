@@ -1,6 +1,6 @@
 # 钟表店密室
 
-PICO Vibe Lab 原作品版本更新。版本 0.5.2 / versionCode 8。Android 包名 `com.vrgames.clockshop`。
+PICO Vibe Lab 原作品版本更新。版本 0.6.3 / versionCode 12。Android 包名 `com.vrgames.clockshop`。
 
 本版变更见[更新说明](更新说明.md)。正常构建使用仓库内已落盘的代码和素材，不需要模型生成服务。
 

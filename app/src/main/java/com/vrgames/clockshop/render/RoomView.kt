@@ -31,6 +31,7 @@ import kotlin.math.sin
  * and lids, things to take, gears and photos put in place, dials, and the hand tray.
  */
 class RoomView(private val models: Map<String, Entity>, private val tex: Map<String, TextureResource>, private val lighting: Lighting) {
+    init { current = this }
     val root = Entity()
     private var roomRoot = Entity().also { root.addChild(it) }
     private var built: Room? = null
@@ -128,22 +129,53 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
      * Makes [e] something to pinch, known as [id]. The box is at least [MIN_HIT] across, so things a
      * few meters off are easy to catch.
      */
-    private fun hit(e: Entity, id: String, size: Vector3, center: Vector3 = Vector3(0f, 0f, 0f)) {
-        val s = Vector3(max(size.x, MIN_HIT), max(size.y, MIN_HIT), max(size.z, 0.05f))
+    private fun hit(e: Entity, id: String, size: Vector3, center: Vector3 = Vector3(0f, 0f, 0f), exact: Boolean = false) {
+        val s = if (exact) size else Vector3(max(size.x, MIN_HIT), max(size.y, MIN_HIT), max(size.z, 0.05f))
         e.components.set(CollisionComponent(listOf(ShapeResource.createBox(s).offsetByTranslation(center)), PhysicsMaterialResource()))
         e.components.set(InteractableComponent())
         e.components.set(HoverEffectComponent())
         hits[e] = id
         parts[id] = e
+        hitBoxes[e] = s to center
     }
+    /** Debug: each pinch box's size and centre in its entity. */
+    private val hitBoxes = HashMap<Entity, Pair<Vector3, Vector3>>()
 
     fun hitOf(e: Entity?): String? {
         var cur = e
         while (cur != null) {
-            hits[cur]?.let { return it }
+            hits[cur]?.let { return resolve(cur!!, it) }
             cur = cur.getParent()
         }
         return null
+    }
+
+    /**
+     * v0.6.1 (device 2026-11-25: 「钥匙出现后，也需要点好多次才能把钥匙拉到自己的面前」): a thing to take that lies inside
+     * another pinch box (the key in the open safe, the key on the mantel clock, the small gear in the toolbox) was behind
+     * that box, so the look and pinch went to the safe, the clock, the box. A pinch on a box with something to take inside
+     * it now takes that thing.
+     */
+    private fun resolve(e: Entity, id: String): String {
+        if (id.startsWith("take:") || id.startsWith("tray:")) return id
+        val (sz, c) = hitBoxes[e] ?: return id
+        for ((t, tid) in hits) {
+            if (!tid.startsWith("take:") || t === e || !shown(t)) continue
+            val tc = hitBoxes[t]?.second ?: Vector3(0f, 0f, 0f)
+            val p = runCatching { e.convertPositionFrom(tc, t) }.getOrNull() ?: continue
+            if (kotlin.math.abs(p.x - c.x) <= sz.x / 2 + 0.02f && kotlin.math.abs(p.y - c.y) <= sz.y / 2 + 0.02f && kotlin.math.abs(p.z - c.z) <= sz.z / 2 + 0.02f) {
+                android.util.Log.i("ClockInput", "pinch on $id -> $tid (inside it)")
+                return tid
+            }
+        }
+        return id
+    }
+
+    /** Whether [e] and all its parents are on (a thing taken or not yet there is off, or gone). */
+    private fun shown(e: Entity): Boolean {
+        var cur: Entity? = e
+        while (cur != null) { if (!cur.enabled) return false; if (cur === root) return true; cur = cur.getParent() }
+        return false
     }
 
     /** v0.5: every pinchable thing and where it stands (room frame): where a carried item is let go. */
@@ -284,6 +316,53 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         }
         lighting.use(m)
         lighting.receive(root)
+        if (com.vrgames.clockshop.game.AutoPilot.debug) logTargets(r)
+    }
+
+    /**
+     * Debug (v0.6.0): every thing to pinch in room [r], where its pinch box is in the room's frame (the panels' frame), for
+     * the panel layout check (tools: which panel position hides nothing). "TARGET room id x y z w h d".
+     */
+    /**
+     * Debug (AutoPilot "rays", v0.6.1: 「我希望你能把我们这个游戏里所有相关的操作都再检查一遍」): from the seated eyes to the
+     * middle of every pinch box in the room, the first box the line of sight meets, and where a pinch there goes. A walk
+     * pinches by name and never shows a box hidden behind another.
+     */
+    fun debugRays() {
+        val sc = root.scene ?: run { android.util.Log.w("ClockRays", "no scene"); return }
+        val eye = Vector3(0f, 1.2f, 0f)
+        var bad = 0; var n = 0
+        for ((e, id) in hits.entries.toList().sortedBy { it.value }) {
+            if (e in trayTokens.values || !shown(e)) continue
+            val c = hitBoxes[e]?.second ?: Vector3(0f, 0f, 0f)
+            val t = runCatching { root.convertPositionFrom(c, e) }.getOrNull() ?: continue
+            val d = Vector3(t.x - eye.x, t.y - eye.y, t.z - eye.z); val len = kotlin.math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+            val dir = Vector3(d.x / len, d.y / len, d.z / len)
+            val group = com.pico.spatial.core.ecs.simulation.CollisionGroup(com.pico.spatial.core.ecs.simulation.CollisionGroup.COLLISION_GROUP_ALL)
+            val res = runCatching { sc.rayCast(eye, dir, len + 1f, com.pico.spatial.core.ecs.simulation.CollisionCastHitMode.ALL, group, root).results.sortedBy { it.distance } }
+                .onFailure { android.util.Log.w("ClockRays", "ray $id: ${it.message}") }.getOrNull() ?: continue
+            val first = res.firstOrNull()
+            val goes = first?.let { hitOf(it.entity) } ?: "nothing"
+            n++
+            val ok = goes == id || (id.startsWith("take:") && goes == id)
+            if (!ok) bad++
+            android.util.Log.i("ClockRays", "${if (ok) "ok " else "BAD"} $id: look and pinch -> $goes (%.2f m)".format(len))
+        }
+        android.util.Log.i("ClockRays", "rays done: $n targets, $bad go elsewhere")
+    }
+
+    private fun logTargets(r: Room) {
+        for ((e, id) in hits) {
+            if (e in trayTokens.values) continue
+            val (sz, c) = hitBoxes[e] ?: (Vector3(0.1f, 0.1f, 0.1f) to Vector3(0f, 0f, 0f))
+            val p = runCatching { root.convertPositionFrom(c, e) }.getOrNull() ?: continue
+            // The box's corners in the room frame (the entity may be scaled and turned): its extent there.
+            val corners = listOf(-1f, 1f).flatMap { a -> listOf(-1f, 1f).flatMap { b -> listOf(-1f, 1f).map { d ->
+                runCatching { root.convertPositionFrom(Vector3(c.x + a * sz.x / 2, c.y + b * sz.y / 2, c.z + d * sz.z / 2), e) }.getOrNull() } } }.filterNotNull()
+            if (corners.isEmpty()) continue
+            val w = corners.maxOf { it.x } - corners.minOf { it.x }; val h = corners.maxOf { it.y } - corners.minOf { it.y }; val dd = corners.maxOf { it.z } - corners.minOf { it.z }
+            android.util.Log.i("ClockTargets", "TARGET ${r.name} $id %.3f %.3f %.3f %.3f %.3f %.3f".format(p.x, p.y, p.z, w, h, dd))
+        }
     }
 
     private fun buildFront() {
@@ -325,7 +404,7 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         fitted("counter", 1.0f, 0.9f, 0.5f)?.apply { setPos(Vector3(-1.4f, 0f, -1.6f)); roomRoot.addChild(this) }
             ?: box(Vector3(1.0f, 0.9f, 0.5f), Vector3(-1.4f, 0.45f, -1.6f), woodMid)
         parts["case"] = box(Vector3(1.0f, 0.5f, 0.5f), Vector3(-1.4f, 1.15f, -1.6f), glass)
-        for (k in 0 until 3) (piece("pocketwatch", 0.12f) ?: model(sphere, brass).apply { setScale(0.04f) }).apply {
+        for (k in 0 until 3) (piece("pocketwatch", 0.085f) ?: model(sphere, brass).apply { setScale(0.04f) }).apply {
             setPos(Vector3(-1.7f + k * 0.3f, 0.92f, -1.6f)); roomRoot.addChild(this)
         }
         (piece("gramophone", 0.6f))?.apply { setPos(Vector3(-2.3f, 0f, -0.6f)); transform().eulerAngles = EulerAngles(0f, 70f, 0f); roomRoot.addChild(this) }
@@ -357,12 +436,14 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         roomRoot.addChild(mb)
         parts["musicbox"] = mb
         for (k in 1..3) {
-            val seat = Entity().apply { setPos(Vector3(0f, 1.2f + (k - 1) * 0.1f, -1.25f)) }
+            // v0.6.1 (device 2026-11-25: the top gear seat took many pinches): 12 cm apart (was 10), and each seat's pinch
+            // box is its own 12 cm slice of the spindle, 34 cm across, so the boxes no longer overlap (they did by 4 cm).
+            val seat = Entity().apply { setPos(Vector3(0f, GEAR_Y0 + (k - 1) * GEAR_DY, -1.25f)) }
             val r = GEAR_R[Shop.GEAR_FOR[k]!!]!!
             seat.addChild(model(MeshResource.createTorus(r + 0.012f, r + 0.002f), slotMat).apply { setName("ring") })
-            seat.addChild(model(MeshResource.createCylinder(0.09f, 0.006f), brass).apply { setPos(Vector3(0f, -0.05f, 0f)) })
+            seat.addChild(model(MeshResource.createCylinder(GEAR_DY, 0.006f), brass).apply { setPos(Vector3(0f, -GEAR_DY / 2, 0f)) })
             roomRoot.addChild(seat)
-            hit(seat, "gear$k", Vector3(0.26f, 0.09f, 0.26f))
+            hit(seat, "gear$k", Vector3(0.34f, GEAR_DY, 0.34f), exact = true)
         }
         item(Item.GEAR_L, Vector3(-0.5f, 0.95f, -1.4f))
         item(Item.GEAR_M, Vector3(0.45f, 0.95f, -1.0f))
@@ -471,7 +552,9 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         for ((k, p) in Shop.Plate.values().withIndex()) {
             val e = plate("plate_${p.name.lowercase()}", 0.17f).apply { setPos(Vector3(-1.45f, 1.85f - k * 0.42f, -2.2f)); }
             roomRoot.addChild(e)
-            hit(e, "plate:${p.name}", Vector3(0.36f, 0.36f, 0.1f))
+            // v0.6.1: the box was given in the plate's own scale (0.17), so it was 6 cm across on the wall 2.6 m away; now
+            // 34 cm across in the room (the plates are 42 cm apart).
+            hit(e, "plate:${p.name}", Vector3(0.34f / 0.17f, 0.34f / 0.17f, 0.1f / 0.17f))
         }
         door("go:tower", Vector3(1.55f, 1.05f, -2.4f), 0f)
         val backing = model(MeshResource.createCylinder(0.02f, 0.66f), pbr(color(0.12f, 0.14f, 0.3f))).apply {
@@ -601,7 +684,7 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
         box(Vector3(2.5f, 0.016f, 0.016f), Vector3(0.02f, 0.42f, -2.36f), brass)
         // The reward: the finished watch, big and turning in the air above the desk.
         val watch = Entity().apply { setPos(Vector3(0f, 1.42f, -1.3f)); enabled = false }
-        watch.addChild(piece("pocketwatch", 0.42f) ?: model(sphere, brass).apply { setScale(0.2f) })
+        watch.addChild(piece("pocketwatch", 0.3f) ?: model(sphere, brass).apply { setScale(0.2f) })
         roomRoot.addChild(watch)
         parts["bigWatch"] = watch
     }
@@ -624,7 +707,7 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             if (lying) transform().eulerAngles = EulerAngles(-90f, 0f, 0f)
         }
         roomRoot.addChild(e)
-        hit(e, "take:${i.name}", if (lying) Vector3(0.18f, 0.24f, 0.06f) else Vector3(0.18f, 0.12f, 0.18f))
+        hit(e, "take:${i.name}", if (lying) Vector3(0.15f, 0.24f, 0.1f) else Vector3(0.18f, 0.12f, 0.18f))
     }
 
     // ---- The hand tray ----
@@ -883,6 +966,8 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
     } ?: Vec3(0.0, 1.5, -2.0)
 
     companion object {
+        /** Debug: the view on screen (AutoPilot "rays"). */
+        @Volatile var current: RoomView? = null
         /** The generated models' size at 1 m tall (width, height, depth; tools/blender/prep_ai.py's log). */
         val EXTENTS = mapOf(
             "counter" to Vector3(1.994f, 1f, 0.896f), "drawer" to Vector3(2.173f, 1f, 2.077f), "trunk" to Vector3(2.056f, 1f, 2.901f),
@@ -890,6 +975,9 @@ class RoomView(private val models: Map<String, Entity>, private val tex: Map<Str
             "door" to Vector3(0.422f, 1f, 0.108f), "bench" to Vector3(1.854f, 1f, 0.908f), "frame" to Vector3(0.703f, 1f, 0.046f),
         )
         const val MIN_HIT = 0.14f
+        /** v0.6.1: the three gear seats on the workshop's spindle: the lowest's height and the step up. */
+        const val GEAR_Y0 = 1.18f
+        const val GEAR_DY = 0.12f
         const val MANTEL_ASKEW = 32f
         const val TRAY_Y = 0.86f
         const val TRAY_Z = -0.46f

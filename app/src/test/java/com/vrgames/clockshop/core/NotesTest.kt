@@ -54,7 +54,7 @@ class NotesTest {
 
     @Test
     fun notesAreShorterThanBefore() {
-        assertEquals(10_000L, Notes.NOTE_MS)
+        assertEquals(7_000L, Notes.NOTE_MS)
         assertEquals(15_000L, Notes.FIRST_NOTE_MS)
         assertEquals(15_000L, Notes.HINT_NOTE_MS)
     }

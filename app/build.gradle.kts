@@ -14,8 +14,8 @@ android {
         applicationId = "com.vrgames.clockshop"
         minSdk = 35
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.5.2"
+        versionCode = 12
+        versionName = "0.6.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters.add("arm64-v8a") }

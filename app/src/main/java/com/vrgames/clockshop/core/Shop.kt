@@ -382,6 +382,11 @@ class Shop {
 
         /** How many positions dial [d] has. */
         fun dialSteps(d: String) = DIAL_STEPS[d] ?: if (d.startsWith("safe")) 10 else 12
+        /** v0.6.1: one notch [by] (−1 or +1) from [cur] on dial [d]: round the dial, except the pendulum's length, which stops at its ends. */
+        fun dialStep(d: String, cur: Int, by: Int): Int {
+            val n = dialSteps(d)
+            return if (d == "pend") (cur + by).coerceIn(0, n - 1) else ((cur + by) % n + n) % n
+        }
         val GEAR_FOR = mapOf(1 to Item.GEAR_L, 2 to Item.GEAR_M, 3 to Item.GEAR_S)
         val PHOTO_ORDER = listOf(Item.PHOTO_1, Item.PHOTO_2, Item.PHOTO_3, Item.PHOTO_4, Item.PHOTO_5)
         val CLOCK_ROOM = mapOf("big" to Room.FRONT, "wall" to Room.WORKSHOP, "attic" to Room.ATTIC, "tower" to Room.TOWER)

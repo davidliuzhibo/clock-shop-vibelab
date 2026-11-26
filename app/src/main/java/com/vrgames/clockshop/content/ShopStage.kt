@@ -165,18 +165,40 @@ fun ShopStage() {
         Game.noteGone(ver)
     }
     // Panels: one explanation at a time.
+    // v0.6.0: the note, the room panel and the clock/dial panel stand where nothing to work on is behind them, room by
+    // room and tool by tool (core.PanelLayout).
+    val placedFor = androidx.compose.runtime.remember { arrayOfNulls<String>(1) }
+    LaunchedEffect(Game.version, Game.tool, view) {
+        val key = "${Game.shop.room}|${Game.tool}|${view != null}"
+        if (placedFor[0] == key) return@LaunchedEffect
+        placedFor[0] = key
+        fun moveTo(id: String, p: com.vrgames.clockshop.core.PanelLayout.Placed) = panels[id]?.let { e ->
+            e.setPos(Vector3(p.at.x.toFloat(), p.at.y.toFloat(), p.at.z.toFloat()))
+            e.transform().eulerAngles = EulerAngles(p.pitch.toFloat(), p.yaw.toFloat(), 0f)
+        }
+        val r = Game.shop.room
+        moveTo(PANEL_NOTE, com.vrgames.clockshop.core.PanelLayout.noteFor(r))
+        moveTo(PANEL_HUD, com.vrgames.clockshop.core.PanelLayout.hudFor(r))
+        Game.tool?.let { moveTo(PANEL_TOOL, com.vrgames.clockshop.core.PanelLayout.toolFor(it, r)) }
+    }
     LaunchedEffect(Game.phase, Game.menuOpen, Game.note, Game.tool, view) {
         fun show(id: String, on: Boolean) = panels[id]?.let { if (it.enabled != on) it.enabled = on }
         val playing = Game.phase == Game.Phase.PLAYING
         show(PANEL_CARD, Game.phase == Game.Phase.CARD)
         show(PANEL_RESULT, Game.phase == Game.Phase.RESULT)
-        // The clock and dial controls take the hud's place at the lower right, out of the way of the room.
-        show(PANEL_HUD, playing && Game.tool == null)
+        // v0.6.1: the dock (room, parts, 提示 / 线索簿 / 菜单) is always there, low at the left; the clock and dial
+        // controls open beside the thing being worked on.
+        show(PANEL_HUD, true)
         show(PANEL_TOOL, playing && Game.tool != null)
         // v0.5.2: not under the open menu, nor over the opening and closing cards (they stand ahead, above the note).
         show(PANEL_NOTE, playing && Game.note != null && !Game.menuOpen)
-        show(PANEL_MENU, true)
-        panels[PANEL_MENU]?.setPos(if (Game.menuOpen) MENU_OPEN_POS else MENU_POS)
+        show(PANEL_MENU, Game.menuOpen)
+    }
+    // v0.6.2: the music box's numbers beside it, from the moment it sings until the safe is open (workshop only).
+    LaunchedEffect(Game.version, Game.phase, view) {
+        val s = Game.shop
+        val on = Game.phase == Game.Phase.PLAYING && s.room == com.vrgames.clockshop.core.Shop.Room.WORKSHOP && s.musicPlays && "safe" !in s.opened
+        panels[PANEL_TUNE]?.let { if (it.enabled != on) it.enabled = on }
     }
     LaunchedEffect(Game.debugOpen) {
         when (Game.debugOpen ?: return@LaunchedEffect) {
@@ -310,6 +332,7 @@ fun ShopStage() {
             AttachmentPanel(PANEL_TOOL) { ToolPanel(converter) }
             AttachmentPanel(PANEL_RESULT) { ResultPanel(converter) }
             AttachmentPanel(PANEL_NOTE) { NotePanel(converter) }
+            AttachmentPanel(PANEL_TUNE) { TunePanel(converter) }
             AttachmentPanel(PANEL_MENU) {
                 MenuPanel(converter, toggleWindow, faceMe = { Game.faceRequest++ }, quit = { com.vrgames.clockshop.platform.AppExit.finishAll(context) }, version = appVersion)
             }
@@ -531,11 +554,10 @@ private val TEXTURES = listOf("photo1", "photo2", "photo3", "photo4", "photo5", 
 private val MODELS = listOf("grandfather", "wallclock", "mantel", "musicbox", "gramophone", "pocketwatch", "astro", "desklamp", "safe",
     "shell_front", "shell_workshop", "shell_attic", "shell_cellar", "shell_tower", "shell_study",
     "tower_movement", "calendar_clock", "counter", "drawer", "trunk", "chest_body", "chest_lid", "trapdoor", "door", "bench", "frame", "writing_desk", "cabinet", "wheel_big", "wheel_small", "plate_disc", "panel_card", "panel_tool", "panel_result", "panel_note", "panel_hud")
-private val PANEL_FRAMES = mapOf(PANEL_CARD to "panel_card", PANEL_TOOL to "panel_tool", PANEL_RESULT to "panel_result", PANEL_NOTE to "panel_note", PANEL_HUD to "panel_hud")
+private val PANEL_FRAMES = mapOf(PANEL_CARD to "panel_card", PANEL_TOOL to "panel_tool", PANEL_RESULT to "panel_result", PANEL_NOTE to "panel_note")
 
-/** The menu tab low at the left of the tray, and where the unfolded menu stands (tray frame). */
-private val MENU_POS = Vector3(-0.36f, 0.82f, -0.5f)
-private val MENU_OPEN_POS = Vector3(-0.42f, 1.0f, -0.55f)
+/** v0.6.1: the unfolded menu, over the dock at the left (core.PanelLayout.MENU). */
+private val MENU_OPEN = com.vrgames.clockshop.core.PanelLayout.MENU
 
 private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<String, Entity>) {
     fun put(id: String, pos: Vector3, pitch: Float, yaw: Float = 0f) {
@@ -546,7 +568,12 @@ private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<Strin
         // could not be read (device test 2026-11-12). Placed once with the room, they stay put.
         v.root.addChild(e)
         e.setPos(pos)
-        PANEL_FRAMES[id]?.let { name -> v.frame(name)?.let { f -> f.setPos(Vector3(0f, 0f, -0.006f)); e.addChild(f) } }
+        PANEL_FRAMES[id]?.let { name -> v.frame(name)?.let { f ->
+            f.setPos(Vector3(0f, 0f, -0.006f))
+            // v0.6.2b: the clock/dial panel is 6 cm wider than its frame was built (0.44 m text): stretched to it.
+            if (id == PANEL_TOOL) f.transform().setScaleVector(Vector3((TOOL_W + 0.08f) / 0.52f, 1f, 1f))
+            e.addChild(f)
+        } }
         e.transform().eulerAngles = EulerAngles(pitch, yaw, 0f)
     }
     // In the room's frame (the seat's facing), fixed once placed. Card and result ahead at
@@ -566,7 +593,8 @@ private fun attach(v: RoomView, a: SpatialViewAttachments, panels: HashMap<Strin
     putAt(PANEL_HUD, com.vrgames.clockshop.core.PanelLayout.HUD)
     putAt(PANEL_TOOL, com.vrgames.clockshop.core.PanelLayout.TOOL)
     putAt(PANEL_NOTE, com.vrgames.clockshop.core.PanelLayout.NOTE)
-    put(PANEL_MENU, MENU_POS, -30f, 30f)
+    putAt(PANEL_MENU, MENU_OPEN)
+    putAt(PANEL_TUNE, com.vrgames.clockshop.core.PanelLayout.TUNE)
 }
 
 /**

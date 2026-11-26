@@ -26,6 +26,8 @@ import com.vrgames.clockshop.core.Walkthrough
  * of 5 cm: the note says how to pull it)
  */
 object AutoPilot {
+    /** Debug builds only (set when the hook registers). */
+    @Volatile var debug = false; private set
     const val ACTION = "com.vrgames.clockshop.TEST"
     const val TAG = "ClockTest"
     private val main = Handler(Looper.getMainLooper())
@@ -36,6 +38,7 @@ object AutoPilot {
 
     fun register(context: Context) {
         if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        debug = true
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
                 // 2026-11-19: the menu's 退出, for the emulator test (every window of the app should go).
@@ -68,6 +71,7 @@ object AutoPilot {
             "carry" -> Game.debugCarry = id
             "state" -> Log.i(TAG, "state room=${Game.shop.room} tray=${Game.shop.tray} opened=${Game.shop.opened} phase=${Game.phase} tool=${Game.tool} menu=${Game.menuOpen} note=${Game.note}")
             "layout" -> Game.debugOpen = "layout"
+            "rays" -> com.vrgames.clockshop.render.RoomView.current?.debugRays()
             "shortpull" -> Game.debugCarry = "short,${id ?: "drawer"}"
             "tap" -> tap(id ?: return)
             "tool" -> Game.tool = id?.takeIf { it != "none" }
